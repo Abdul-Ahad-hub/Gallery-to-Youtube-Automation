@@ -1,0 +1,50 @@
+name: Upload Football Short (Mon/Wed/Fri)
+
+on:
+  schedule:
+    # Runs 3x per week: Monday, Wednesday, and Friday at 14:00 UTC
+    - cron: '0 14 * * 1,3,5'
+  workflow_dispatch:
+
+concurrency:
+  group: goalcast-upload-short
+  cancel-in-progress: false
+
+jobs:
+  process-next-short:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install FFmpeg (Non-AI 9:16 formatting & crowd ducking)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Edge TTS (Free unlimited fallback voice engine)
+        run: pip install --quiet edge-tts
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Process oldest pending clip and publish Short
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
+          EDGE_TTS_VOICE: ${{ secrets.EDGE_TTS_VOICE }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REDIRECT_URI: ${{ secrets.YOUTUBE_REDIRECT_URI }}
+          YOUTUBE_PRIVACY_STATUS: ${{ secrets.YOUTUBE_PRIVACY_STATUS }}
+        run: npx tsx scripts/process-next.ts

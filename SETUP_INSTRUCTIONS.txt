@@ -1,0 +1,101 @@
+GOALCAST AI — SETUP & DEPLOYMENT INSTRUCTIONS ($0/MONTH STACK)
+================================================================
+
+GoalCast AI runs on a $0/month stack:
+- Hosting & Temporary Video Storage: Vercel (Free Hobby tier) + Vercel Blob
+- Database: Neon Serverless PostgreSQL (Free tier)
+- Automated 3x/Week Worker: GitHub Actions (Mon, Wed, Fri at 14:00 UTC)
+- AI Video Understanding, Title, Description & Script: Google Gemini API (gemini-4-hydrogen)
+- Voiceover: ElevenLabs (Primary) + Automatic Free Unlimited Edge TTS Fallback
+- Publishing: YouTube Data API v3
+
+----------------------------------------------------------------
+STEP 1: LOCAL ENVIRONMENT FILE
+----------------------------------------------------------------
+1. Copy .env.example to .env:
+   cp .env.example .env
+
+2. Fill in the environment variables below as you complete Steps 2–5.
+
+----------------------------------------------------------------
+STEP 2: NEON SERVERLESS POSTGRESQL (1-COMMAND SETUP)
+----------------------------------------------------------------
+1. Create a free database at https://neon.tech
+2. Copy the pooled PostgreSQL connection string into DATABASE_URL in .env.
+3. Run the one-command schema setup:
+   npm run db:setup
+
+----------------------------------------------------------------
+STEP 3: VERCEL HOSTING & VERCEL BLOB STORAGE
+----------------------------------------------------------------
+1. Push this repository to GitHub and import it in https://vercel.com (Free Hobby plan).
+2. Inside your Vercel project, go to Storage -> Create Database -> Blob.
+3. Connect the Blob store to your project. Vercel automatically generates:
+   BLOB_READ_WRITE_TOKEN
+4. Copy BLOB_READ_WRITE_TOKEN to your local .env (for local testing) and save it for Step 5.
+
+How uploads work:
+- The browser uploads 6-second clips directly to Vercel Blob via /api/upload
+  (bypassing Vercel's 4.5 MB serverless body limit).
+- The clip is registered as PENDING in Neon PostgreSQL.
+- As soon as YouTube confirms publication, the worker immediately deletes
+  the raw file from Vercel Blob via del(), keeping storage near 0 B.
+
+----------------------------------------------------------------
+STEP 4: YOUTUBE DATA API V3 OAUTH SETUP
+----------------------------------------------------------------
+1. Open https://console.cloud.google.com/apis/credentials
+2. Enable "YouTube Data API v3" in APIs & Services -> Library.
+3. Configure OAuth Consent Screen:
+   - Add scopes:
+     https://www.googleapis.com/auth/youtube.upload
+     https://www.googleapis.com/auth/youtube.readonly
+   - Add your Google email under Test Users while in Testing mode.
+4. Create an OAuth 2.0 Client ID (Web application) and add Authorized Redirect URIs:
+   - Local development:
+     http://localhost:3000/auth/youtube/callback
+   - Production (Vercel):
+     https://<your-vercel-domain>/auth/youtube/callback
+5. Add YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, and YOUTUBE_REDIRECT_URI to .env
+   and Vercel Environment Variables.
+6. Open your deployed website and click "Connect YouTube" once. Refresh tokens are
+   saved securely in Neon PostgreSQL so GitHub Actions publishes hands-free.
+
+----------------------------------------------------------------
+STEP 5: GITHUB ACTIONS SECRETS (3X/WEEK AUTO-PUBLISHING)
+----------------------------------------------------------------
+1. In your GitHub repository, open Settings -> Secrets and variables -> Actions.
+2. Add these Repository Secrets:
+   - DATABASE_URL
+   - BLOB_READ_WRITE_TOKEN
+   - GEMINI_API_KEY
+   - YOUTUBE_CLIENT_ID
+   - YOUTUBE_CLIENT_SECRET
+   - YOUTUBE_REDIRECT_URI
+   - YOUTUBE_PRIVACY_STATUS (optional: public, unlisted, or private)
+   - ELEVENLABS_API_KEY (optional — leave unset to use free unlimited Edge TTS)
+   - ELEVENLABS_VOICE_ID (optional)
+   - EDGE_TTS_VOICE (optional, default: en-GB-RyanNeural)
+
+3. The workflow .github/workflows/upload-short.yml automatically runs every:
+   Monday, Wednesday, and Friday at 14:00 UTC (cron: 0 14 * * 1,3,5)
+   - Picks the single oldest PENDING clip from Neon PostgreSQL.
+   - If the backlog is empty, exits cleanly without making API calls.
+   - Formats to 9:16 via FFmpeg (non-AI blurred background, no play cropped).
+   - Watches the clip with Gemini to write the title, description, tags, and
+     frame-synced commentary.
+   - Generates passionate commentary audio (ElevenLabs or free Edge TTS) and
+     ducks stadium audio cleanly underneath.
+   - Uploads to YouTube Shorts and immediately deletes the raw video from Vercel Blob.
+
+4. You can also test it manually anytime in GitHub -> Actions -> "Upload Football Short"
+   -> "Run workflow", or click "Process Next" on the Backlog page in the website.
+
+----------------------------------------------------------------
+USEFUL COMMANDS
+----------------------------------------------------------------
+npm install          # Install dependencies
+npm run db:setup     # Create Neon PostgreSQL tables
+npm run dev          # Run website locally on http://localhost:3000
+npm run worker:run   # Run scripts/process-next.ts manually
+npm test             # Run unit tests

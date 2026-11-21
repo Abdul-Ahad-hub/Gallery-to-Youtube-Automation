@@ -1,0 +1,6 @@
+{
+  "name": "GoalCast AI",
+  "description": "Automated football Shorts commentary and YouTube publishing backlog dashboard running on a $0/month stack.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
