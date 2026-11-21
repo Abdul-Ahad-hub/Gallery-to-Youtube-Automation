@@ -6,7 +6,6 @@ import path from 'node:path';
 import { handleUpload, type HandleUploadBody } from '@vercel/blob/client';
 import express from 'express';
 import multer from 'multer';
-import { createServer as createViteServer } from 'vite';
 import { z } from 'zod';
 import { getEnv, isVercelBlobConfigured } from './src/config/env';
 import { getAppContainer } from './src/core/container';
@@ -115,7 +114,7 @@ async function buildDashboardSnapshot(): Promise<DashboardSnapshot> {
   };
 }
 
-async function createApp() {
+export function createApiApp() {
   const app = express();
   app.set('trust proxy', 1);
   app.use(express.json({ limit: '2mb' }));
@@ -437,8 +436,14 @@ async function createApp() {
     }
   });
 
+  return app;
+}
+
+async function createStandaloneApp() {
+  const app = createApiApp();
   const isProd = env.NODE_ENV === 'production';
   if (!isProd) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -455,13 +460,15 @@ async function createApp() {
   return app;
 }
 
-createApp()
-  .then((app) => {
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`GoalCast AI server running on http://0.0.0.0:${PORT}`);
+if (!process.env.VERCEL) {
+  createStandaloneApp()
+    .then((app) => {
+      app.listen(PORT, '0.0.0.0', () => {
+        console.log(`GoalCast AI server running on http://0.0.0.0:${PORT}`);
+      });
+    })
+    .catch((err) => {
+      console.error('Failed to start GoalCast AI server:', err);
+      process.exit(1);
     });
-  })
-  .catch((err) => {
-    console.error('Failed to start GoalCast AI server:', err);
-    process.exit(1);
-  });
+}
