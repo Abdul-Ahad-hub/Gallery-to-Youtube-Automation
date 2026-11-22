@@ -22,6 +22,11 @@ export interface CommentaryCue {
   energy: 'rising' | 'peak' | 'explosive' | 'afterglow';
 }
 
+export interface CameraKeyframe {
+  timeSec: number;
+  centerX: number;
+}
+
 export interface GoalAnalysisResult {
   summary: string;
   strikeTimestampSec: number;
@@ -30,6 +35,7 @@ export interface GoalAnalysisResult {
   shortsDescription: string;
   tags: string[];
   cues: CommentaryCue[];
+  cameraTrack: CameraKeyframe[];
   fullScript: string;
 }
 

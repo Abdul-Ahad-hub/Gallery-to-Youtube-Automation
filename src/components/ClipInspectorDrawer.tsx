@@ -6,6 +6,7 @@ import {
   Copy,
   ExternalLink,
   Film,
+  Maximize2,
   RotateCcw,
   Trash2,
   X,
@@ -18,6 +19,7 @@ interface ClipInspectorDrawerProps {
   clip: QueueClip | null;
   retrying: boolean;
   onClose: () => void;
+  onPreview: (clip: QueueClip) => void;
   onRetry: (clipId: string) => void;
   onDelete: (clipId: string) => void;
 }
@@ -33,6 +35,7 @@ export function ClipInspectorDrawer({
   clip,
   retrying,
   onClose,
+  onPreview,
   onRetry,
   onDelete,
 }: ClipInspectorDrawerProps) {
@@ -109,8 +112,23 @@ export function ClipInspectorDrawer({
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-5 sm:px-6 py-5 space-y-6">
           <div className="grid grid-cols-1 sm:grid-cols-[148px_1fr] gap-5 items-start">
-            <div className="w-[140px] sm:w-[148px] aspect-[9/16] rounded-lg overflow-hidden border border-[#E5E7EB] bg-[#F3F4F6] relative mx-auto sm:mx-0">
-              {clip.thumbnailUrl && !imgFailed ? (
+            <button
+              type="button"
+              onClick={() => onPreview(clip)}
+              aria-label={`Open full 9:16 Shorts preview for ${clip.originalFilename}`}
+              className="group w-[140px] sm:w-[148px] aspect-[9/16] rounded-lg overflow-hidden border border-[#E5E7EB] bg-black relative mx-auto sm:mx-0 text-left focus-visible:outline-2 focus-visible:outline-[#E5322D]"
+            >
+              {!clip.storageCleanedAt &&
+              (clip.blobUrl.startsWith('https://') || clip.blobUrl.startsWith('http://')) ? (
+                <video
+                  src={clip.blobUrl}
+                  autoPlay
+                  loop
+                  muted
+                  playsInline
+                  className="w-full h-full object-cover"
+                />
+              ) : clip.thumbnailUrl && !imgFailed ? (
                 <img
                   src={clip.thumbnailUrl}
                   alt={`9:16 Shorts preview for ${clip.originalFilename}`}
@@ -124,10 +142,13 @@ export function ClipInspectorDrawer({
                   <span className="text-[11px]">9:16 Short</span>
                 </div>
               )}
+              <div className="absolute top-1.5 right-1.5 w-6 h-6 rounded-full bg-black/60 text-white inline-flex items-center justify-center opacity-85 group-hover:opacity-100 transition-opacity">
+                <Maximize2 className="w-3 h-3" />
+              </div>
               <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/80 via-black/40 to-transparent">
                 <p className="font-mono text-[10px] text-white tabular-nums">1080×1920 · 9:16</p>
               </div>
-            </div>
+            </button>
 
             <div className="space-y-4">
               <div>

@@ -7,7 +7,17 @@ import type { IVoiceSynthesizer, VoiceSynthesisResult } from '../../interfaces/p
 const execFileAsync = promisify(execFile);
 
 function joinCuesForSpeech(cues: CommentaryCue[]): string {
-  return cues.map((cue) => cue.text.trim()).filter(Boolean).join(' ');
+  return cues
+    .map((cue) => {
+      const cleaned = cue.text.trim();
+      if (!cleaned) return '';
+      if (cue.energy === 'explosive' || cue.energy === 'peak') {
+        return /[!?.]$/.test(cleaned) ? cleaned : `${cleaned}!`;
+      }
+      return cleaned;
+    })
+    .filter(Boolean)
+    .join(' ');
 }
 
 /**
@@ -41,9 +51,9 @@ export class ElevenLabsVoiceProvider implements IVoiceSynthesizer {
           text: scriptText,
           model_id: 'eleven_turbo_v2_5',
           voice_settings: {
-            stability: 0.32,
-            similarity_boost: 0.82,
-            style: 0.78,
+            stability: 0.22,
+            similarity_boost: 0.85,
+            style: 0.92,
             use_speaker_boost: true,
           },
         }),
@@ -68,8 +78,8 @@ export class ElevenLabsVoiceProvider implements IVoiceSynthesizer {
 export class EdgeTtsVoiceProvider implements IVoiceSynthesizer {
   private readonly voiceName: string;
 
-  constructor(voiceName: string = process.env.EDGE_TTS_VOICE || 'en-GB-RyanNeural') {
-    this.voiceName = voiceName;
+  constructor(voiceName: string = process.env.EDGE_TTS_VOICE?.trim() || 'en-GB-RyanNeural') {
+    this.voiceName = voiceName.trim() || 'en-GB-RyanNeural';
   }
 
   async synthesize(
@@ -82,8 +92,8 @@ export class EdgeTtsVoiceProvider implements IVoiceSynthesizer {
       [
         '--voice',
         this.voiceName,
-        '--rate=+14%',
-        '--pitch=+6Hz',
+        '--rate=+18%',
+        '--pitch=+10Hz',
         '--text',
         scriptText,
         '--write-media',
@@ -111,8 +121,13 @@ export class HybridCommentaryVoiceSynthesizer implements IVoiceSynthesizer {
   }) {
     this.elevenLabsKey = (options?.elevenLabsKey ?? process.env.ELEVENLABS_API_KEY)?.trim() || undefined;
     this.elevenLabsVoiceId =
-      options?.elevenLabsVoiceId ?? process.env.ELEVENLABS_VOICE_ID ?? 'pNInz6obpgDQGcFmaJgB';
-    this.edgeVoiceName = options?.edgeVoiceName ?? process.env.EDGE_TTS_VOICE ?? 'en-GB-RyanNeural';
+      options?.elevenLabsVoiceId?.trim() ||
+      process.env.ELEVENLABS_VOICE_ID?.trim() ||
+      'pNInz6obpgDQGcFmaJgB';
+    this.edgeVoiceName =
+      options?.edgeVoiceName?.trim() ||
+      process.env.EDGE_TTS_VOICE?.trim() ||
+      'en-GB-RyanNeural';
   }
 
   async synthesize(

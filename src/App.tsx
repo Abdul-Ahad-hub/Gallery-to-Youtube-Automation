@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Clapperboard, LogOut, Play, Plus, Youtube } from 'lucide-react';
 import { ClipInspectorDrawer } from './components/ClipInspectorDrawer';
 import { QueueTable } from './components/QueueTable';
+import { ShortsPreviewModal } from './components/ShortsPreviewModal';
 import { UploadHero } from './components/UploadHero';
 import { formatCountdown } from './core/domain/schedule';
 import type { DashboardSnapshot, QueueClip } from './core/domain/types';
@@ -32,6 +33,7 @@ export default function App() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [connectingYouTube, setConnectingYouTube] = useState(false);
   const [inspectedClipId, setInspectedClipId] = useState<string | null>(null);
+  const [previewClipId, setPreviewClipId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{
     tone: 'success' | 'error' | 'info';
     message: string;
@@ -97,6 +99,11 @@ export default function App() {
     return clips.find((c) => c.id === inspectedClipId) ?? null;
   }, [clips, inspectedClipId]);
 
+  const previewClip: QueueClip | null = useMemo(() => {
+    if (!previewClipId) return null;
+    return clips.find((c) => c.id === previewClipId) ?? null;
+  }, [clips, previewClipId]);
+
   const handleUploadFiles = async (files: File[]) => {
     setUploading(true);
     setUploadProgress({ completed: 0, total: files.length });
@@ -109,6 +116,11 @@ export default function App() {
       });
       setSnapshot(result.snapshot);
       setLastQueuedCount(result.uploadedCount);
+      const newestClip = result.clips[0] ?? result.snapshot.clips[0] ?? null;
+      if (newestClip) {
+        setActivePage('backlog');
+        setPreviewClipId(newestClip.id);
+      }
     } catch (err) {
       setFeedback({
         tone: 'error',
@@ -147,6 +159,7 @@ export default function App() {
       const result = await deleteClip(clipId);
       setSnapshot(result.snapshot);
       if (inspectedClipId === clipId) setInspectedClipId(null);
+      if (previewClipId === clipId) setPreviewClipId(null);
       setFeedback({
         tone: 'info',
         message: 'Clip removed from backlog.',
@@ -388,6 +401,7 @@ export default function App() {
               retryingId={retryingId}
               deletingId={deletingId}
               onInspect={(clip) => setInspectedClipId(clip.id)}
+              onPreview={(clip) => setPreviewClipId(clip.id)}
               onRetry={handleRetryClip}
               onDelete={handleDeleteClip}
             />
@@ -399,8 +413,16 @@ export default function App() {
         clip={inspectedClip}
         retrying={retryingId === inspectedClip?.id}
         onClose={() => setInspectedClipId(null)}
+        onPreview={(clip) => setPreviewClipId(clip.id)}
         onRetry={handleRetryClip}
         onDelete={handleDeleteClip}
+      />
+
+      <ShortsPreviewModal
+        clip={previewClip}
+        channelHandle={snapshot?.channel.channelHandle}
+        channelTitle={snapshot?.channel.channelTitle}
+        onClose={() => setPreviewClipId(null)}
       />
     </div>
   );

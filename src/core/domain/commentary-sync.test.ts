@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildCameraPanExpression,
   buildCommentaryDuckingFilterGraph,
   buildVerticalShortsFilterGraph,
   isSafeYouTubeUrl,
+  normalizeCameraTrack,
   normalizeCommentaryCues,
   normalizeShortsDescription,
   normalizeShortsTitle,
@@ -69,17 +71,46 @@ test('normalizeCommentaryCues enforces monotonic non-overlapping cues within 6.0
   }
 });
 
-test('buildVerticalShortsFilterGraph produces non-AI 1080x1920 blurred-background overlay filter', () => {
-  const graph = buildVerticalShortsFilterGraph();
-  assert.ok(graph.includes('scale=1080:1920:force_original_aspect_ratio=increase'));
-  assert.ok(graph.includes('boxblur='));
-  assert.ok(graph.includes('scale=1080:1920:force_original_aspect_ratio=decrease'));
-  assert.ok(graph.includes('overlay=(W-w)/2:(H-h)/2'));
+test('normalizeCameraTrack sorts, clamps centerX to [0, 1], and deduplicates keyframes', () => {
+  const track = normalizeCameraTrack(
+    [
+      { timeSec: 4.7, centerX: 0.2 },
+      { timeSec: 0, centerX: 1.2 },
+      { timeSec: 2.5, centerX: 0.55 },
+      { timeSec: 5.9, centerX: -0.1 },
+    ],
+    6.0
+  );
+  assert.equal(track.length, 4);
+  assert.equal(track[0].timeSec, 0);
+  assert.equal(track[0].centerX, 1);
+  assert.equal(track[1].timeSec, 2.5);
+  assert.equal(track[3].centerX, 0);
+});
+
+test('buildVerticalShortsFilterGraph produces full-screen 1080x1920 dynamic pan-and-scan crop without blur bars', () => {
+  const centeredGraph = buildVerticalShortsFilterGraph();
+  assert.ok(centeredGraph.includes("crop=w='min(iw,ih*9/16)':h='ih':x='(iw-ow)/2':y=0"));
+  assert.ok(centeredGraph.includes('scale=1080:1920:flags=lanczos'));
+  assert.ok(!centeredGraph.includes('boxblur'));
+
+  const trackedGraph = buildVerticalShortsFilterGraph([
+    { timeSec: 0.0, centerX: 0.75 },
+    { timeSec: 2.5, centerX: 0.55 },
+    { timeSec: 4.0, centerX: 0.3 },
+    { timeSec: 5.9, centerX: 0.2 },
+  ]);
+  assert.ok(trackedGraph.includes("crop=w='min(iw,ih*9/16)':h='ih':x='clip(("));
+  assert.ok(trackedGraph.includes('*iw-ow/2,0,iw-ow)'));
+  assert.ok(trackedGraph.includes('if(lt(t,2.5)'));
+  assert.ok(trackedGraph.includes('scale=1080:1920:flags=lanczos'));
+
+  assert.equal(buildCameraPanExpression([]), '(iw-ow)/2');
 });
 
 test('buildCommentaryDuckingFilterGraph ducks stadium audio under loudnorm voiceover', () => {
-  const graph = buildCommentaryDuckingFilterGraph(0.22);
-  assert.ok(graph.includes('[0:a]volume=0.22[crowd]'));
+  const graph = buildCommentaryDuckingFilterGraph(0.25);
+  assert.ok(graph.includes('[0:a]volume=0.25[crowd]'));
   assert.ok(graph.includes('sidechaincompress'));
   assert.ok(graph.includes('loudnorm'));
   assert.ok(graph.includes('amix=inputs=2'));

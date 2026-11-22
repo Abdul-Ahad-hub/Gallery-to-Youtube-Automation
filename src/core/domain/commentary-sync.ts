@@ -1,4 +1,9 @@
-import type { CommentaryBeatType, CommentaryCue, GoalAnalysisResult } from './types.js';
+import type {
+  CameraKeyframe,
+  CommentaryBeatType,
+  CommentaryCue,
+  GoalAnalysisResult,
+} from './types.js';
 
 export const TARGET_SHORTS_WIDTH = 1080;
 export const TARGET_SHORTS_HEIGHT = 1920;
@@ -159,13 +164,52 @@ export function formatCommentaryScript(cues: CommentaryCue[]): string {
     .join('\n');
 }
 
+export function normalizeCameraTrack(
+  keyframes: CameraKeyframe[] | undefined,
+  clipDurationSec: number = DEFAULT_CLIP_DURATION_SEC
+): CameraKeyframe[] {
+  if (!Array.isArray(keyframes) || keyframes.length === 0) {
+    return [];
+  }
+
+  const safeDuration = Math.max(1.0, roundTenths(clipDurationSec));
+  const cleaned = keyframes
+    .filter(
+      (kf) =>
+        kf !== null &&
+        typeof kf === 'object' &&
+        Number.isFinite(kf.timeSec) &&
+        Number.isFinite(kf.centerX)
+    )
+    .map((kf) => ({
+      timeSec: Math.round(Math.min(safeDuration, Math.max(0, kf.timeSec)) * 100) / 100,
+      centerX: Math.round(Math.min(1, Math.max(0, kf.centerX)) * 10000) / 10000,
+    }))
+    .sort((a, b) => a.timeSec - b.timeSec);
+
+  const deduped: CameraKeyframe[] = [];
+  for (const kf of cleaned) {
+    const prev = deduped[deduped.length - 1];
+    if (prev && Math.abs(kf.timeSec - prev.timeSec) < 0.05) {
+      deduped[deduped.length - 1] = kf;
+    } else {
+      deduped.push(kf);
+    }
+  }
+
+  return deduped.slice(0, 6);
+}
+
 export function normalizeGoalAnalysis(
-  raw: Omit<GoalAnalysisResult, 'fullScript'>,
+  raw: Omit<GoalAnalysisResult, 'fullScript' | 'cameraTrack'> & {
+    cameraTrack?: CameraKeyframe[];
+  },
   clipDurationSec: number = DEFAULT_CLIP_DURATION_SEC
 ): GoalAnalysisResult {
   const cues = normalizeCommentaryCues(raw.cues, clipDurationSec);
   const strikeCue = cues.find((c) => c.beat === 'strike');
   const netCue = cues.find((c) => c.beat === 'net_impact');
+  const cameraTrack = normalizeCameraTrack(raw.cameraTrack, clipDurationSec);
 
   return {
     summary: raw.summary.trim() || 'Clinical football finish captured in 6 seconds.',
@@ -179,37 +223,79 @@ export function normalizeGoalAnalysis(
     shortsDescription: normalizeShortsDescription(raw.shortsDescription, raw.tags),
     tags: Array.from(new Set(['Shorts', 'Football', 'Soccer', 'Goal', ...(raw.tags ?? [])])).slice(0, 10),
     cues,
+    cameraTrack,
     fullScript: formatCommentaryScript(cues),
   };
 }
 
+function fmtNum(n: number): string {
+  return Number(n.toFixed(4)).toString();
+}
+
 /**
- * Pure non-AI FFmpeg filter_complex builder for 9:16 YouTube Shorts formatting.
- * Centers the original goal action without cropping any play width, filling top/bottom
- * with a smoothly scaled, cropped, Gaussian-blurred background of the same footage.
+ * Builds a piecewise-linear FFmpeg `x` crop expression from normalized cameraTrack
+ * keyframes (`centerX` in [0, 1]), clamped safely to [0, iw - ow] so the 9:16
+ * window never leaves frame bounds. Falls back to centered `(iw-ow)/2` when empty.
+ */
+export function buildCameraPanExpression(cameraTrack?: CameraKeyframe[]): string {
+  const track = normalizeCameraTrack(cameraTrack, 30);
+  if (track.length === 0) {
+    return '(iw-ow)/2';
+  }
+
+  if (track.length === 1) {
+    const c = fmtNum(track[0].centerX);
+    return `clip(${c}*iw-ow/2,0,iw-ow)`;
+  }
+
+  let centerExpr = fmtNum(track[track.length - 1].centerX);
+  for (let i = track.length - 2; i >= 0; i--) {
+    const k0 = track[i];
+    const k1 = track[i + 1];
+    const dt = Math.max(0.01, k1.timeSec - k0.timeSec);
+    const c0 = fmtNum(k0.centerX);
+    const dc = fmtNum(k1.centerX - k0.centerX);
+    const t0 = fmtNum(k0.timeSec);
+    const t1 = fmtNum(k1.timeSec);
+    const dtStr = fmtNum(dt);
+    const segExpr = `${c0}+(${dc})*(t-${t0})/${dtStr}`;
+    centerExpr = `if(lt(t,${t1}),${segExpr},${centerExpr})`;
+  }
+
+  const first = track[0];
+  if (first.timeSec > 0) {
+    centerExpr = `if(lt(t,${fmtNum(first.timeSec)}),${fmtNum(first.centerX)},${centerExpr})`;
+  }
+
+  return `clip((${centerExpr})*iw-ow/2,0,iw-ow)`;
+}
+
+/**
+ * Full-screen 9:16 YouTube Shorts pan-and-scan FFmpeg video filter chain.
+ * Dynamically crops a 9:16 portrait window (`w=ih*9/16`, `h=ih`, `y=0`) that tracks
+ * the ball and goal smoothly via `cameraTrack`, then scales cleanly to 1080x1920.
  */
 export function buildVerticalShortsFilterGraph(
+  cameraTrack?: CameraKeyframe[],
   width: number = TARGET_SHORTS_WIDTH,
   height: number = TARGET_SHORTS_HEIGHT
 ): string {
-  return [
-    `[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},boxblur=24:6,eq=brightness=-0.06:saturation=1.1[bg]`,
-    `[0:v]scale=${width}:${height}:force_original_aspect_ratio=decrease[fg]`,
-    `[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[vout]`,
-  ].join(';');
+  const xExpr = buildCameraPanExpression(cameraTrack);
+  return `crop=w='min(iw,ih*9/16)':h='ih':x='${xExpr}':y=0,scale=${width}:${height}:flags=lanczos,setsar=1`;
 }
 
 /**
  * Pure FFmpeg audio ducking filter_complex builder.
- * Lowers original stadium/crowd audio cleanly underneath the commentary voiceover
- * using gentle gain reduction + sidechain compression so the commentator stands out.
+ * Keeps original stadium/crowd audio audible at `crowdGain` (default 0.25) underneath
+ * the passionate commentary voiceover with gentle sidechain compression so the crowd
+ * atmosphere stays alive while the commentator cuts through clearly.
  */
-export function buildCommentaryDuckingFilterGraph(crowdGain: number = 0.24): string {
-  const safeGain = Math.min(0.5, Math.max(0.08, crowdGain));
+export function buildCommentaryDuckingFilterGraph(crowdGain: number = 0.25): string {
+  const safeGain = Math.min(0.6, Math.max(0.1, crowdGain));
   return [
     `[0:a]volume=${safeGain.toFixed(2)}[crowd]`,
     `[1:a]loudnorm=I=-14:TP=-1.5:LRA=9,asplit=2[vo_sc][vo_mix]`,
-    `[crowd][vo_sc]sidechaincompress=threshold=0.03:ratio=6:attack=25:release=220[ducked]`,
+    `[crowd][vo_sc]sidechaincompress=threshold=0.06:ratio=2.5:attack=30:release=250[ducked]`,
     `[ducked][vo_mix]amix=inputs=2:duration=first:dropout_transition=2,dynaudnorm[aout]`,
   ].join(';');
 }

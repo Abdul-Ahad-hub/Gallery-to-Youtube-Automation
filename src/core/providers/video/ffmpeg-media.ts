@@ -4,6 +4,7 @@ import {
   buildCommentaryDuckingFilterGraph,
   buildVerticalShortsFilterGraph,
 } from '../../domain/commentary-sync.js';
+import type { CameraKeyframe } from '../../domain/types.js';
 import type { IAudioMixer, IVideoFormatter } from '../../interfaces/providers.js';
 
 const execFileAsync = promisify(execFile);
@@ -63,22 +64,33 @@ export async function probeVideoDurationSec(videoPath: string): Promise<number |
 }
 
 /**
- * Pure non-AI 9:16 YouTube Shorts video formatter using FFmpeg.
- * Preserves the entire horizontal goal play centered over a Gaussian-blurred background fill.
+ * Full-screen 9:16 YouTube Shorts pan-and-scan video formatter using FFmpeg.
+ * Dynamically crops a full-height 9:16 portrait window that tracks the ball and
+ * goal via piecewise-linear `cameraTrack` interpolation, with zero blurred bars.
  */
 export class FfmpegShortsFormatter implements IVideoFormatter {
-  async formatToVerticalShorts(inputPath: string, outputPath: string): Promise<void> {
-    const filterComplex = buildVerticalShortsFilterGraph(1080, 1920);
+  async formatToVerticalShorts(
+    inputPath: string,
+    outputPath: string,
+    cameraTrack?: CameraKeyframe[]
+  ): Promise<void> {
+    const filterChain = buildVerticalShortsFilterGraph(cameraTrack, 1080, 1920);
+    console.log(
+      '[GoalCast FFmpeg] cameraTrack keyframes:',
+      cameraTrack && cameraTrack.length > 0 ? JSON.stringify(cameraTrack) : '[] (centered fallback)'
+    );
+    console.log('[GoalCast FFmpeg] Dynamic 9:16 crop filter:', filterChain);
+
     await execFileAsync(
       'ffmpeg',
       [
         '-y',
         '-i',
         inputPath,
-        '-filter_complex',
-        filterComplex,
+        '-vf',
+        filterChain,
         '-map',
-        '[vout]',
+        '0:v:0',
         '-map',
         '0:a?',
         '-c:v',
@@ -86,7 +98,7 @@ export class FfmpegShortsFormatter implements IVideoFormatter {
         '-preset',
         'veryfast',
         '-crf',
-        '21',
+        '20',
         '-pix_fmt',
         'yuv420p',
         '-c:a',
@@ -103,8 +115,9 @@ export class FfmpegShortsFormatter implements IVideoFormatter {
 }
 
 /**
- * Pure FFmpeg audio mixer that ducks original stadium/crowd audio under
- * the generated passionate commentary track with zero manual editing.
+ * Pure FFmpeg audio mixer that keeps stadium/crowd audio alive (volume=0.25) underneath
+ * the generated passionate commentary track with gentle sidechain ducking.
+ * If the source clip has no audio stream, synthesizes a subtle stadium crowd roar bed.
  */
 export class FfmpegAudioMixer implements IAudioMixer {
   async mixVoiceoverWithDucking(
@@ -115,7 +128,8 @@ export class FfmpegAudioMixer implements IAudioMixer {
     const hasOriginalAudio = await probeHasAudioStream(formattedVideoPath);
 
     if (hasOriginalAudio) {
-      const filterComplex = buildCommentaryDuckingFilterGraph(0.24);
+      const filterComplex = buildCommentaryDuckingFilterGraph(0.25);
+      console.log('[GoalCast FFmpeg] Mixing commentary with original crowd audio (volume=0.25)');
       await execFileAsync(
         'ffmpeg',
         [
@@ -146,7 +160,17 @@ export class FfmpegAudioMixer implements IAudioMixer {
       return;
     }
 
-    // Clip has no stadium audio track — attach normalized commentary cleanly
+    // Clip has no stadium audio track — synthesize a warm stadium crowd atmosphere bed
+    // behind the normalized commentary so the Short still feels alive.
+    const durationSec = (await probeVideoDurationSec(formattedVideoPath)) ?? 6.5;
+    const synthCrowdFilter = [
+      `anoisesrc=color=pink:sample_rate=44100:duration=${(durationSec + 1).toFixed(1)},highpass=f=160,lowpass=f=2200,aecho=0.8:0.7:45|90:0.4|0.3,volume=0.22[crowd]`,
+      `[1:a]loudnorm=I=-14:TP=-1.5:LRA=9,asplit=2[vo_sc][vo_mix]`,
+      `[crowd][vo_sc]sidechaincompress=threshold=0.06:ratio=2.5:attack=30:release=250[ducked]`,
+      `[ducked][vo_mix]amix=inputs=2:duration=shortest:dropout_transition=2,dynaudnorm[aout]`,
+    ].join(';');
+    console.log('[GoalCast FFmpeg] No source audio found — mixing commentary with synthetic stadium crowd bed');
+
     await execFileAsync(
       'ffmpeg',
       [
@@ -155,14 +179,14 @@ export class FfmpegAudioMixer implements IAudioMixer {
         formattedVideoPath,
         '-i',
         voiceoverAudioPath,
+        '-filter_complex',
+        synthCrowdFilter,
         '-map',
         '0:v:0',
         '-map',
-        '1:a:0',
+        '[aout]',
         '-c:v',
         'copy',
-        '-af',
-        'loudnorm=I=-14:TP=-1.5:LRA=9',
         '-c:a',
         'aac',
         '-b:a',

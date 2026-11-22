@@ -1,4 +1,5 @@
 import type {
+  CameraKeyframe,
   CommentaryCue,
   GoalAnalysisResult,
   PipelineStage,
@@ -71,7 +72,11 @@ export interface IVideoStorageProvider {
 }
 
 export interface IVideoFormatter {
-  formatToVerticalShorts(inputPath: string, outputPath: string): Promise<void>;
+  formatToVerticalShorts(
+    inputPath: string,
+    outputPath: string,
+    cameraTrack?: CameraKeyframe[]
+  ): Promise<void>;
 }
 
 export interface IVideoAnalyzer {

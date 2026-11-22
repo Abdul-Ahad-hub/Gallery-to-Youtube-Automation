@@ -62,24 +62,11 @@ export class GoalCastPipelineOrchestrator {
       // Step 1: Download raw clip from Vercel Blob (or local preview disk)
       const hasRawBinary = await this.deps.storage.downloadToFile(clip.blobUrl, rawPath);
 
-      // Step 2: Non-AI Shorts Formatting (9:16 vertical with blurred background fill)
-      await this.deps.queueRepo.updateStage(clip.id, 'formatting_9_16');
-      let formattedVideoPath: string | null = null;
-      if (hasRawBinary) {
-        try {
-          await this.deps.formatter.formatToVerticalShorts(rawPath, verticalPath);
-          formattedVideoPath = verticalPath;
-        } catch (formatErr) {
-          throw new Error(
-            `FFmpeg 9:16 formatting failed: ${formatErr instanceof Error ? formatErr.message : String(formatErr)}`
-          );
-        }
-      }
-
-      // Step 3: Gemini Video Understanding + AI Title, Description & Perfect-Sync Script
+      // Step 2: Gemini Video Understanding + Dynamic Camera Tracking + AI Title, Description & Script
+      // Analyze the original wide raw video first so Gemini sees the full pitch and tracks the ball accurately.
       await this.deps.queueRepo.updateStage(clip.id, 'analyzing_video');
       const analysis = await this.deps.analyzer.analyzeGoalClip({
-        videoPath: formattedVideoPath ?? (hasRawBinary ? rawPath : null),
+        videoPath: hasRawBinary ? rawPath : null,
         mimeType: clip.mimeType,
         originalFilename: clip.originalFilename,
         durationSec: clip.durationSec,
@@ -90,6 +77,24 @@ export class GoalCastPipelineOrchestrator {
         commentaryScript: analysis.fullScript,
         commentaryCues: analysis.cues,
       });
+
+      // Step 3: Full-Screen 9:16 Pan & Scan Formatting using Gemini's cameraTrack keyframes
+      await this.deps.queueRepo.updateStage(clip.id, 'formatting_9_16');
+      let formattedVideoPath: string | null = null;
+      if (hasRawBinary) {
+        try {
+          await this.deps.formatter.formatToVerticalShorts(
+            rawPath,
+            verticalPath,
+            analysis.cameraTrack
+          );
+          formattedVideoPath = verticalPath;
+        } catch (formatErr) {
+          throw new Error(
+            `FFmpeg 9:16 formatting failed: ${formatErr instanceof Error ? formatErr.message : String(formatErr)}`
+          );
+        }
+      }
 
       // Step 4: Passionate Voiceover Synthesis (ElevenLabs primary -> Edge TTS automatic fallback)
       await this.deps.queueRepo.updateStage(clip.id, 'synthesizing_voice');

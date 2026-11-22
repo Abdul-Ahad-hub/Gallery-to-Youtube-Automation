@@ -9,6 +9,7 @@ import {
   Loader2,
   RotateCcw,
   Search,
+  Smartphone,
   Trash2,
 } from 'lucide-react';
 import { isSafeYouTubeUrl } from '../core/domain/commentary-sync';
@@ -23,6 +24,7 @@ interface QueueTableProps {
   retryingId: string | null;
   deletingId: string | null;
   onInspect: (clip: QueueClip) => void;
+  onPreview: (clip: QueueClip) => void;
   onRetry: (clipId: string) => void;
   onDelete: (clipId: string) => void;
 }
@@ -115,6 +117,7 @@ export function QueueTable({
   retryingId,
   deletingId,
   onInspect,
+  onPreview,
   onRetry,
   onDelete,
 }: QueueTableProps) {
@@ -273,6 +276,16 @@ export function QueueTable({
                 </div>
 
                 <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => onPreview(clip)}
+                    aria-label={`Preview 9:16 Short for ${clip.originalFilename}`}
+                    className="flex-1 min-h-[42px] inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-[#1F2328] bg-[#F5F5FA] hover:bg-[#ECEEF4] border border-[#E5E7EB] rounded-lg transition-colors whitespace-nowrap"
+                  >
+                    <Smartphone className="w-3.5 h-3.5 text-[#E5322D]" />
+                    <span>9:16 Preview</span>
+                  </button>
+
                   <button
                     type="button"
                     onClick={() => onInspect(clip)}
@@ -457,6 +470,16 @@ export function QueueTable({
 
                     <td className="py-3.5 pl-3 pr-5 whitespace-nowrap text-right">
                       <div className="inline-flex items-center justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => onPreview(clip)}
+                          aria-label={`Preview 9:16 Short for ${clip.originalFilename}`}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-[#1F2328] bg-[#F5F5FA] hover:bg-[#ECEEF4] border border-[#E5E7EB] rounded-lg transition-colors whitespace-nowrap"
+                        >
+                          <Smartphone className="w-3.5 h-3.5 text-[#E5322D]" />
+                          <span>Preview 9:16</span>
+                        </button>
+
                         <button
                           type="button"
                           onClick={() => onInspect(clip)}
