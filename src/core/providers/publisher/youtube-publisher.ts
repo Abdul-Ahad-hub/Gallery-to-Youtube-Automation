@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import { google } from 'googleapis';
-import type { StoredYouTubeTokens } from '../../domain/types';
+import type { StoredYouTubeTokens } from '../../domain/types.js';
 import type {
   IShortsPublisher,
   PublishShortInput,
   PublishShortResult,
-} from '../../interfaces/providers';
+} from '../../interfaces/providers.js';
 
 export const YOUTUBE_OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/youtube.upload',

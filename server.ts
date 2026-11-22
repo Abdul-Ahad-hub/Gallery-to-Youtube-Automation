@@ -7,19 +7,19 @@ import { handleUpload, type HandleUploadBody } from '@vercel/blob/client';
 import express from 'express';
 import multer from 'multer';
 import { z } from 'zod';
-import { getEnv, isVercelBlobConfigured } from './src/config/env';
-import { getAppContainer } from './src/core/container';
-import { getUpcomingScheduleRuns } from './src/core/domain/schedule';
-import type { DashboardSnapshot, YouTubeChannelConnection } from './src/core/domain/types';
+import { getEnv, isVercelBlobConfigured } from './src/config/env.js';
+import { getAppContainer } from './src/core/container.js';
+import { getUpcomingScheduleRuns } from './src/core/domain/schedule.js';
+import type { DashboardSnapshot, YouTubeChannelConnection } from './src/core/domain/types.js';
 import {
   createYouTubeOAuthClient,
   exchangeYouTubeAuthCode,
   isYouTubeOAuthConfigured,
   resolveYouTubeRedirectUri,
   YOUTUBE_OAUTH_SCOPES,
-} from './src/core/providers/publisher/youtube-publisher';
-import { isAllowedVercelBlobUrl } from './src/core/providers/storage/vercel-blob-storage';
-import { probeVideoDurationSec } from './src/core/providers/video/ffmpeg-media';
+} from './src/core/providers/publisher/youtube-publisher.js';
+import { isAllowedVercelBlobUrl } from './src/core/providers/storage/vercel-blob-storage.js';
+import { probeVideoDurationSec } from './src/core/providers/video/ffmpeg-media.js';
 
 const env = getEnv();
 const PORT = env.PORT;
@@ -46,23 +46,32 @@ const registerBlobClipSchema = z.object({
   mimeType: z.string().min(1).max(80).default('video/mp4'),
 });
 
-const pendingOAuthStates = new Map<string, number>();
 let pipelineInFlight = false;
 
+// Stateless HMAC-signed OAuth state so it survives across serverless instances.
+function oauthStateKey(): string {
+  return process.env.YOUTUBE_CLIENT_SECRET?.trim() || 'goalcast-dev-state-key';
+}
+
+function signOAuthPayload(payload: string): string {
+  return crypto.createHmac('sha256', oauthStateKey()).update(payload).digest('hex');
+}
+
 function issueOAuthState(): string {
-  const now = Date.now();
-  for (const [key, expiresAt] of pendingOAuthStates.entries()) {
-    if (expiresAt < now) pendingOAuthStates.delete(key);
-  }
-  const state = crypto.randomBytes(24).toString('hex');
-  pendingOAuthStates.set(state, now + 10 * 60 * 1000);
-  return state;
+  const expiresAt = Date.now() + 10 * 60 * 1000;
+  const payload = `${crypto.randomBytes(12).toString('hex')}.${expiresAt}`;
+  return `${payload}.${signOAuthPayload(payload)}`;
 }
 
 function consumeOAuthState(state: string): boolean {
-  const expiresAt = pendingOAuthStates.get(state);
-  pendingOAuthStates.delete(state);
-  return typeof expiresAt === 'number' && expiresAt >= Date.now();
+  const parts = state.split('.');
+  if (parts.length !== 3) return false;
+  const [nonce, expiresAtRaw, signature] = parts;
+  const expected = signOAuthPayload(`${nonce}.${expiresAtRaw}`);
+  const a = Buffer.from(signature, 'hex');
+  const b = Buffer.from(expected, 'hex');
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return false;
+  return Number(expiresAtRaw) >= Date.now();
 }
 
 function sanitizeFilename(rawName: string): string {
@@ -324,6 +333,60 @@ export function createApiApp() {
 
   // 7. Manual test trigger: Process & upload oldest pending clip immediately
   app.post('/api/queue/process-next', async (_req, res) => {
+    // On Vercel there is no FFmpeg and functions time out quickly, so hand the
+    // run off to the GitHub Actions worker instead of processing in-function.
+    if (process.env.VERCEL) {
+      try {
+        const snapshot = await buildDashboardSnapshot();
+        const hasPending = snapshot.clips.some((c) => c.status === 'pending');
+        if (!hasPending) {
+          res.json({ processed: false, clip: null, message: 'Backlog is empty. Upload a clip first.', snapshot });
+          return;
+        }
+
+        const token = process.env.GITHUB_DISPATCH_TOKEN?.trim();
+        const owner = process.env.GITHUB_REPO_OWNER?.trim() || process.env.VERCEL_GIT_REPO_OWNER;
+        const repo = process.env.GITHUB_REPO_NAME?.trim() || process.env.VERCEL_GIT_REPO_SLUG;
+        const ref = process.env.GITHUB_REPO_REF?.trim() || 'master';
+        if (!token || !owner || !repo) {
+          res.status(400).json({
+            error:
+              'On-demand runs on Vercel need GITHUB_DISPATCH_TOKEN set. Or run it from GitHub → Actions → Upload Football Short → Run workflow.',
+          });
+          return;
+        }
+
+        const ghResp = await fetch(
+          `https://api.github.com/repos/${owner}/${repo}/actions/workflows/upload-short.yml/dispatches`,
+          {
+            method: 'POST',
+            headers: {
+              Accept: 'application/vnd.github+json',
+              Authorization: `Bearer ${token}`,
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'goalcast-ai',
+            },
+            body: JSON.stringify({ ref }),
+          }
+        );
+        if (!ghResp.ok) {
+          const detail = await ghResp.text();
+          res.status(502).json({ error: `GitHub workflow dispatch failed (${ghResp.status}): ${detail.slice(0, 200)}` });
+          return;
+        }
+
+        res.json({
+          processed: false,
+          clip: null,
+          message: 'Pipeline started on GitHub Actions. Refresh in ~2–3 minutes to see the result.',
+          snapshot,
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : 'Could not start pipeline.' });
+      }
+      return;
+    }
+
     if (pipelineInFlight) {
       res.status(409).json({ error: 'A clip is already being processed.' });
       return;

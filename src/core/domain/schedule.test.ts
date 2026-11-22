@@ -1,15 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { envSchema } from '../../config/env';
-import { isAllowedVercelBlobUrl } from '../providers/storage/vercel-blob-storage';
+import { envSchema } from '../../config/env.js';
+import { isAllowedVercelBlobUrl } from '../providers/storage/vercel-blob-storage.js';
 import {
   canTransitionClipStatus,
   computePendingQueuePositions,
   formatFileSize,
   getUpcomingScheduleRuns,
   selectNextPendingClip,
-} from './schedule';
-import type { QueueClip } from './types';
+} from './schedule.js';
+import type { QueueClip } from './types.js';
 
 function makeClip(overrides: Partial<QueueClip>): QueueClip {
   return {

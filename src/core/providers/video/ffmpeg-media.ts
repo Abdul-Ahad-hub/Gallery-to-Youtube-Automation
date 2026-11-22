@@ -3,8 +3,8 @@ import { promisify } from 'node:util';
 import {
   buildCommentaryDuckingFilterGraph,
   buildVerticalShortsFilterGraph,
-} from '../../domain/commentary-sync';
-import type { IAudioMixer, IVideoFormatter } from '../../interfaces/providers';
+} from '../../domain/commentary-sync.js';
+import type { IAudioMixer, IVideoFormatter } from '../../interfaces/providers.js';
 
 const execFileAsync = promisify(execFile);
 

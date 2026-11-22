@@ -4,12 +4,12 @@ import type {
   PipelineStage,
   QueueClip,
   StoredYouTubeTokens,
-} from '../../domain/types';
+} from '../../domain/types.js';
 import type {
   CreateClipInput,
   IChannelRepository,
   IQueueRepository,
-} from '../../interfaces/providers';
+} from '../../interfaces/providers.js';
 
 interface VideoQueueRow {
   id: string;

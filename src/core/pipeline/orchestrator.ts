@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import type { QueueClip } from '../domain/types';
+import type { QueueClip } from '../domain/types.js';
 import type {
   IAudioMixer,
   IChannelRepository,
@@ -11,7 +11,7 @@ import type {
   IVideoFormatter,
   IVideoStorageProvider,
   IVoiceSynthesizer,
-} from '../interfaces/providers';
+} from '../interfaces/providers.js';
 
 export interface PipelineDependencies {
   queueRepo: IQueueRepository;

@@ -4,7 +4,7 @@ import type {
   PipelineStage,
   QueueClip,
   StoredYouTubeTokens,
-} from '../domain/types';
+} from '../domain/types.js';
 
 export interface CreateClipInput {
   id: string;

@@ -7,7 +7,7 @@ import {
   normalizeCommentaryCues,
   normalizeShortsDescription,
   normalizeShortsTitle,
-} from './commentary-sync';
+} from './commentary-sync.js';
 
 test('normalizeShortsTitle appends #Shorts and enforces 100-char YouTube limit', () => {
   assert.equal(normalizeShortsTitle('Incredible 30-Yard Volley!'), 'Incredible 30-Yard Volley! #Shorts');

@@ -1,4 +1,4 @@
-import type { ClipStatus, QueueClip } from './types';
+import type { ClipStatus, QueueClip } from './types.js';
 
 // Monday (1), Wednesday (3), Friday (5) at 14:00 UTC
 export const SCHEDULE_CRON = '0 14 * * 1,3,5';

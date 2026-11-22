@@ -5,13 +5,13 @@ import type {
   PipelineStage,
   QueueClip,
   StoredYouTubeTokens,
-} from '../../domain/types';
-import { selectNextPendingClip } from '../../domain/schedule';
+} from '../../domain/types.js';
+import { selectNextPendingClip } from '../../domain/schedule.js';
 import type {
   CreateClipInput,
   IChannelRepository,
   IQueueRepository,
-} from '../../interfaces/providers';
+} from '../../interfaces/providers.js';
 
 interface LocalStoreFile {
   clips: QueueClip[];

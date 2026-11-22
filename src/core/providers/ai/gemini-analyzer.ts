@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises';
 import { GoogleGenAI, Type } from '@google/genai';
-import { normalizeGoalAnalysis } from '../../domain/commentary-sync';
-import type { GoalAnalysisResult } from '../../domain/types';
-import type { IVideoAnalyzer } from '../../interfaces/providers';
+import { normalizeGoalAnalysis } from '../../domain/commentary-sync.js';
+import type { GoalAnalysisResult } from '../../domain/types.js';
+import type { IVideoAnalyzer } from '../../interfaces/providers.js';
 
 const GEMINI_MODEL = 'gemini-4-hydrogen';
 const MAX_INLINE_VIDEO_BYTES = 18 * 1024 * 1024;

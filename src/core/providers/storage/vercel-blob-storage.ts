@@ -5,7 +5,7 @@ import { del, head, put } from '@vercel/blob';
 import type {
   IVideoStorageProvider,
   UploadedBlobResult,
-} from '../../interfaces/providers';
+} from '../../interfaces/providers.js';
 
 /**
  * Validates that a Blob download URL belongs strictly to an HTTPS Vercel Blob host

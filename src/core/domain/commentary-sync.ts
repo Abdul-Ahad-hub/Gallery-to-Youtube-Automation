@@ -1,4 +1,4 @@
-import type { CommentaryBeatType, CommentaryCue, GoalAnalysisResult } from './types';
+import type { CommentaryBeatType, CommentaryCue, GoalAnalysisResult } from './types.js';
 
 export const TARGET_SHORTS_WIDTH = 1080;
 export const TARGET_SHORTS_HEIGHT = 1920;

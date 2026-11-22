@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { getAppContainer } from '../src/core/container';
+import { getAppContainer } from '../src/core/container.js';
 
 /**
  * Standalone Automated Worker Entrypoint (executed by GitHub Actions Mon/Wed/Fri).

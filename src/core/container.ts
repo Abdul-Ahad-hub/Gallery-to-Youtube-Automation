@@ -1,18 +1,18 @@
-import { getEnv } from '../config/env';
+import { getEnv } from '../config/env.js';
 import type {
   IChannelRepository,
   IQueueRepository,
   IVideoStorageProvider,
-} from './interfaces/providers';
-import { GoalCastPipelineOrchestrator } from './pipeline/orchestrator';
-import { GeminiGoalAnalyzer } from './providers/ai/gemini-analyzer';
-import { LocalPreviewRepository } from './providers/db/local-preview-repository';
-import { NeonChannelRepository, NeonQueueRepository } from './providers/db/neon-repository';
-import { YouTubeShortsPublisher } from './providers/publisher/youtube-publisher';
-import { LocalDiskStorageProvider } from './providers/storage/local-disk-storage';
-import { VercelBlobStorageProvider } from './providers/storage/vercel-blob-storage';
-import { FfmpegAudioMixer, FfmpegShortsFormatter } from './providers/video/ffmpeg-media';
-import { HybridCommentaryVoiceSynthesizer } from './providers/voice/commentary-voice';
+} from './interfaces/providers.js';
+import { GoalCastPipelineOrchestrator } from './pipeline/orchestrator.js';
+import { GeminiGoalAnalyzer } from './providers/ai/gemini-analyzer.js';
+import { LocalPreviewRepository } from './providers/db/local-preview-repository.js';
+import { NeonChannelRepository, NeonQueueRepository } from './providers/db/neon-repository.js';
+import { YouTubeShortsPublisher } from './providers/publisher/youtube-publisher.js';
+import { LocalDiskStorageProvider } from './providers/storage/local-disk-storage.js';
+import { VercelBlobStorageProvider } from './providers/storage/vercel-blob-storage.js';
+import { FfmpegAudioMixer, FfmpegShortsFormatter } from './providers/video/ffmpeg-media.js';
+import { HybridCommentaryVoiceSynthesizer } from './providers/voice/commentary-voice.js';
 
 export interface AppContainer {
   queueRepo: IQueueRepository;

@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import { promisify } from 'node:util';
-import type { CommentaryCue } from '../../domain/types';
-import type { IVoiceSynthesizer, VoiceSynthesisResult } from '../../interfaces/providers';
+import type { CommentaryCue } from '../../domain/types.js';
+import type { IVoiceSynthesizer, VoiceSynthesisResult } from '../../interfaces/providers.js';
 
 const execFileAsync = promisify(execFile);
 

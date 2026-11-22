@@ -3,7 +3,7 @@ import path from 'node:path';
 import type {
   IVideoStorageProvider,
   UploadedBlobResult,
-} from '../../interfaces/providers';
+} from '../../interfaces/providers.js';
 
 export class LocalDiskStorageProvider implements IVideoStorageProvider {
   public readonly providerName = 'local-preview-disk' as const;
