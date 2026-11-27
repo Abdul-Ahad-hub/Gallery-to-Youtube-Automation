@@ -8,6 +8,7 @@ import {
   Plus,
   Youtube,
 } from 'lucide-react';
+import { BacklogGallery } from './components/BacklogGallery';
 import { ClipInspectorDrawer } from './components/ClipInspectorDrawer';
 import { LoginScreen } from './components/LoginScreen';
 import { QueueTable } from './components/QueueTable';
@@ -532,46 +533,60 @@ export default function App() {
                   className="min-h-[42px] px-4 inline-flex items-center justify-center gap-1.5 text-xs sm:text-sm font-semibold text-[#1F2328] bg-white hover:bg-[#FAFAFC] border border-[#D1D5DB] rounded-lg transition-colors whitespace-nowrap shrink-0"
                 >
                   <Plus className="w-4 h-4" />
-                  <span>Add Clips</span>
+                  <span>{isAdmin ? 'Add Clips' : 'Upload Clips'}</span>
                 </button>
 
                 {isAdmin && (
-                  <button
-                    type="button"
-                    onClick={() => void handleProcessNext(true)}
-                    disabled={processingNext || pendingCount === 0}
-                    className="min-h-[42px] px-4 inline-flex items-center justify-center gap-1.5 text-xs sm:text-sm font-semibold text-[#1D4ED8] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] rounded-lg transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
-                  >
-                    <FlaskConical className="w-3.5 h-3.5" />
-                    <span>{processingNext ? 'Running...' : 'Test Preview'}</span>
-                  </button>
-                )}
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void handleProcessNext(true)}
+                      disabled={processingNext || pendingCount === 0}
+                      className="min-h-[42px] px-4 inline-flex items-center justify-center gap-1.5 text-xs sm:text-sm font-semibold text-[#1D4ED8] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] rounded-lg transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
+                    >
+                      <FlaskConical className="w-3.5 h-3.5" />
+                      <span>{processingNext ? 'Running...' : 'Test Preview'}</span>
+                    </button>
 
-                <button
-                  type="button"
-                  onClick={() => void handleProcessNext(false)}
-                  disabled={processingNext || pendingCount === 0}
-                  className="min-h-[42px] px-4 inline-flex items-center justify-center gap-2 text-xs sm:text-sm font-semibold text-white bg-[#E5322D] hover:bg-[#C92420] rounded-lg transition-colors whitespace-nowrap shrink-0 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#E5322D]"
-                >
-                  <Play className="w-3.5 h-3.5 fill-current" />
-                  <span>{processingNext ? 'Processing...' : 'Process Next'}</span>
-                </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleProcessNext(false)}
+                      disabled={processingNext || pendingCount === 0}
+                      className="min-h-[42px] px-4 inline-flex items-center justify-center gap-2 text-xs sm:text-sm font-semibold text-white bg-[#E5322D] hover:bg-[#C92420] rounded-lg transition-colors whitespace-nowrap shrink-0 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#E5322D]"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <span>{processingNext ? 'Processing...' : 'Process Next'}</span>
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 
-            <QueueTable
-              clips={clips}
-              loading={loading}
-              isAdmin={isAdmin}
-              retryingId={retryingId}
-              deletingId={deletingId}
-              approvingId={approvingId}
-              onInspect={(clip) => setInspectedClipId(clip.id)}
-              onPreview={(clip) => setPreviewClipId(clip.id)}
-              onApprove={handleApproveClip}
-              onRetry={handleRetryClip}
-              onDelete={handleDeleteClip}
-            />
+            {isAdmin ? (
+              <QueueTable
+                clips={clips}
+                loading={loading}
+                isAdmin={isAdmin}
+                retryingId={retryingId}
+                deletingId={deletingId}
+                approvingId={approvingId}
+                onInspect={(clip) => setInspectedClipId(clip.id)}
+                onPreview={(clip) => setPreviewClipId(clip.id)}
+                onApprove={handleApproveClip}
+                onRetry={handleRetryClip}
+                onDelete={handleDeleteClip}
+              />
+            ) : (
+              <BacklogGallery
+                clips={clips}
+                loading={loading}
+                retryingId={retryingId}
+                deletingId={deletingId}
+                onAddClips={() => setActivePage('upload')}
+                onRetry={handleRetryClip}
+                onDelete={handleDeleteClip}
+              />
+            )}
           </div>
         )}
       </main>

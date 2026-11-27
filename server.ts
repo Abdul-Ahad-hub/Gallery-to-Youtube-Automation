@@ -617,7 +617,7 @@ export function createApiApp() {
   });
 
   // 7. Manual trigger: Process & auto-publish oldest pending clip (or enter Test Preview if admin passes testPreview=true)
-  app.post('/api/queue/process-next', requireAuth, async (req, res) => {
+  app.post('/api/queue/process-next', requireAdmin, async (req, res) => {
     const user = res.locals.user as AuthUser;
     const isAdminTestPreview = user.role === 'admin' && req.body?.testPreview === true;
 
