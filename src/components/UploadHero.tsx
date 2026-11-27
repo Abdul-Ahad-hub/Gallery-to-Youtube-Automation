@@ -76,8 +76,8 @@ export function UploadHero({
         </h1>
 
         <p className="mt-4 text-base sm:text-lg text-[#57606A] max-w-xl mx-auto leading-relaxed">
-          Just drop your 6-second clips. AI writes the title, description, and synced commentary —
-          then publishes to YouTube Shorts automatically.
+          Drop your 6-second goal clips. GoalCast AI rotates them losslessly, mixes stadium crowd
+          and commentary, publishes to YouTube Shorts, and cleans up storage automatically.
         </p>
 
         <div className="mt-9 sm:mt-10 flex flex-col items-center">

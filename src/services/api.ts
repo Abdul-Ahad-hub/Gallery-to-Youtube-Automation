@@ -1,5 +1,34 @@
 import { upload } from '@vercel/blob/client';
-import type { DashboardSnapshot, QueueClip } from '../core/domain/types';
+import type { AuthUser } from '../core/auth/session';
+import type { CrowdAudioMode, DashboardSnapshot, QueueClip } from '../core/domain/types';
+
+export async function fetchAuthMe(): Promise<{
+  authenticated: boolean;
+  user: AuthUser | null;
+}> {
+  const response = await fetch('/api/auth/me');
+  return parseJsonResponse(response);
+}
+
+export async function loginUser(
+  username: string,
+  password: string
+): Promise<{
+  authenticated: boolean;
+  user: AuthUser;
+}> {
+  const response = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  return parseJsonResponse(response);
+}
+
+export async function logoutUser(): Promise<{ ok: boolean }> {
+  const response = await fetch('/api/auth/logout', { method: 'POST' });
+  return parseJsonResponse(response);
+}
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
   const payload = await response.json().catch(() => ({}));
@@ -119,7 +148,9 @@ export async function deleteClip(clipId: string): Promise<{
   return parseJsonResponse(response);
 }
 
-export async function triggerProcessNext(): Promise<{
+export async function triggerProcessNext(options?: {
+  testPreview?: boolean;
+}): Promise<{
   processed: boolean;
   clip: QueueClip | null;
   message: string;
@@ -127,8 +158,75 @@ export async function triggerProcessNext(): Promise<{
 }> {
   const response = await fetch('/api/queue/process-next', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ testPreview: Boolean(options?.testPreview) }),
   });
   return parseJsonResponse(response);
+}
+
+export async function approveClipUpload(clipId: string): Promise<{
+  processed: boolean;
+  clip: QueueClip | null;
+  message: string;
+  snapshot: DashboardSnapshot;
+}> {
+  const response = await fetch(`/api/clips/${encodeURIComponent(clipId)}/approve`, {
+    method: 'POST',
+  });
+  return parseJsonResponse(response);
+}
+
+export async function rerenderClip(clipId: string): Promise<{
+  clip: QueueClip;
+  snapshot: DashboardSnapshot;
+}> {
+  const response = await fetch(`/api/clips/${encodeURIComponent(clipId)}/rerender`, {
+    method: 'POST',
+  });
+  return parseJsonResponse(response);
+}
+
+export async function fetchClipVariants(clipId: string): Promise<{
+  clipId: string;
+  availableVariants: CrowdAudioMode[];
+}> {
+  const response = await fetch(`/api/clips/${encodeURIComponent(clipId)}/variants`);
+  return parseJsonResponse(response);
+}
+
+export async function renderClipAudioOption(
+  clipId: string,
+  payload: {
+    mode: CrowdAudioMode;
+    delayOffsetSec?: number;
+    regenerate?: boolean;
+  }
+): Promise<{
+  processed: boolean;
+  clip: QueueClip | null;
+  message: string;
+  activeMode: CrowdAudioMode;
+  availableVariants: CrowdAudioMode[];
+  snapshot: DashboardSnapshot;
+}> {
+  const response = await fetch(`/api/clips/${encodeURIComponent(clipId)}/render-option`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse(response);
+}
+
+export function getClipPreviewUrl(
+  clipId: string,
+  source: 'rendered' | 'raw' = 'rendered',
+  cacheBuster?: string
+): string {
+  const params = new URLSearchParams();
+  if (source === 'raw') params.set('source', 'raw');
+  if (cacheBuster) params.set('v', cacheBuster);
+  const query = params.toString();
+  return `/api/clips/${encodeURIComponent(clipId)}/preview${query ? `?${query}` : ''}`;
 }
 
 export async function fetchYouTubeAuthUrl(): Promise<{ url: string; redirectUri: string }> {

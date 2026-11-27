@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import crypto from 'node:crypto';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +9,14 @@ import express from 'express';
 import multer from 'multer';
 import { z } from 'zod';
 import { getEnv, isVercelBlobConfigured } from './src/config/env.js';
+import {
+  buildSessionClearCookie,
+  buildSessionSetCookie,
+  createSessionToken,
+  parseSessionCookie,
+  verifyCredentials,
+  type AuthUser,
+} from './src/core/auth/session.js';
 import { getAppContainer } from './src/core/container.js';
 import { getUpcomingScheduleRuns } from './src/core/domain/schedule.js';
 import type { DashboardSnapshot, YouTubeChannelConnection } from './src/core/domain/types.js';
@@ -136,8 +145,79 @@ export function createApiApp() {
     },
   });
 
+  const isSecureCookieRequest = (req: express.Request): boolean =>
+    req.secure || req.headers['x-forwarded-proto'] === 'https' || Boolean(process.env.VERCEL);
+
+  const getSessionUser = (req: express.Request): AuthUser | null =>
+    parseSessionCookie(req.headers.cookie);
+
+  const requireAuth = (
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction
+  ) => {
+    const user = getSessionUser(req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required. Please sign in.' });
+      return;
+    }
+    res.locals.user = user;
+    next();
+  };
+
+  const requireAdmin = (
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction
+  ) => {
+    const user = getSessionUser(req);
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required. Please sign in.' });
+      return;
+    }
+    if (user.role !== 'admin') {
+      res.status(403).json({ error: 'Admin access required for test pipeline inspection.' });
+      return;
+    }
+    res.locals.user = user;
+    next();
+  };
+
+  // 0. Session Authentication (Production User & Admin Test User)
+  app.get('/api/auth/me', (req, res) => {
+    const user = getSessionUser(req);
+    res.json({ authenticated: Boolean(user), user });
+  });
+
+  app.post('/api/auth/login', (req, res) => {
+    const loginSchema = z.object({
+      username: z.string().min(1).max(80),
+      password: z.string().min(1).max(200),
+    });
+    const parsed = loginSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Enter both username and password.' });
+      return;
+    }
+
+    const user = verifyCredentials(parsed.data.username, parsed.data.password);
+    if (!user) {
+      res.status(401).json({ error: 'Invalid username or password. Contact Abdul Ahad for access.' });
+      return;
+    }
+
+    const token = createSessionToken(user);
+    res.setHeader('Set-Cookie', buildSessionSetCookie(token, isSecureCookieRequest(req)));
+    res.json({ authenticated: true, user });
+  });
+
+  app.post('/api/auth/logout', (req, res) => {
+    res.setHeader('Set-Cookie', buildSessionClearCookie(isSecureCookieRequest(req)));
+    res.json({ ok: true });
+  });
+
   // 1. Minimal dashboard snapshot
-  app.get('/api/dashboard', async (_req, res) => {
+  app.get('/api/dashboard', requireAuth, async (_req, res) => {
     try {
       const snapshot = await buildDashboardSnapshot();
       res.json(snapshot);
@@ -150,6 +230,13 @@ export function createApiApp() {
 
   // 2. Vercel Blob Client Upload handshake endpoint (bypasses Vercel 4.5 MB serverless limit)
   app.post('/api/upload', async (req, res) => {
+    const body = req.body as HandleUploadBody;
+    // Browser token generation requires an authenticated user; Vercel's signed upload-completed webhook does not carry cookies.
+    if (body?.type !== 'blob.upload-completed' && !getSessionUser(req)) {
+      res.status(401).json({ error: 'Authentication required. Please sign in.' });
+      return;
+    }
+
     const token = getEnv().BLOB_READ_WRITE_TOKEN;
     if (!token) {
       res.status(400).json({
@@ -159,7 +246,6 @@ export function createApiApp() {
     }
 
     try {
-      const body = req.body as HandleUploadBody;
       const jsonResponse = await handleUpload({
         body,
         request: req,
@@ -182,7 +268,7 @@ export function createApiApp() {
   });
 
   // 3. Persist completed Vercel Blob client upload as a PENDING job in Neon PostgreSQL
-  app.post('/api/clips/register', async (req, res) => {
+  app.post('/api/clips/register', requireAuth, async (req, res) => {
     try {
       const parsed = registerBlobClipSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -217,7 +303,7 @@ export function createApiApp() {
   });
 
   // 4. Local preview multipart upload fallback (used when BLOB_READ_WRITE_TOKEN is unset)
-  app.post('/api/clips/upload', upload.array('files', 20), async (req, res) => {
+  app.post('/api/clips/upload', requireAuth, upload.array('files', 20), async (req, res) => {
     try {
       const uploadedFiles = req.files as Express.Multer.File[] | undefined;
       if (!uploadedFiles || uploadedFiles.length === 0) {
@@ -287,7 +373,7 @@ export function createApiApp() {
   });
 
   // 5. Retry a failed clip
-  app.post('/api/clips/:id/retry', async (req, res) => {
+  app.post('/api/clips/:id/retry', requireAuth, async (req, res) => {
     try {
       const clipId = String(req.params.id || '').trim();
       const container = getAppContainer();
@@ -305,8 +391,8 @@ export function createApiApp() {
     }
   });
 
-  // 6. Delete a pending or failed clip from backlog & storage
-  app.delete('/api/clips/:id', async (req, res) => {
+  // 6. Delete a pending, ready_for_review, or failed clip from backlog & storage
+  app.delete('/api/clips/:id', requireAuth, async (req, res) => {
     try {
       const clipId = String(req.params.id || '').trim();
       const container = getAppContainer();
@@ -320,7 +406,23 @@ export function createApiApp() {
         return;
       }
 
-      await container.storage.deleteObject(existing.blobUrl);
+      const deleteTargets = new Set<string>([existing.blobUrl]);
+      if (existing.renderedVideoUrl) deleteTargets.add(existing.renderedVideoUrl);
+      const variantsMatch = /\[variants:(\{[^\n]*\})\]/i.exec(existing.commentaryScript || '');
+      if (variantsMatch) {
+        try {
+          const map = JSON.parse(variantsMatch[1]) as Record<string, string>;
+          for (const url of Object.values(map)) {
+            if (url) deleteTargets.add(url);
+          }
+        } catch {
+          // Ignore malformed variant metadata
+        }
+      }
+
+      await Promise.allSettled(
+        Array.from(deleteTargets).map((target) => container.storage.deleteObject(target))
+      );
       await container.queueRepo.deleteClip(clipId);
       const snapshot = await buildDashboardSnapshot();
       res.json({ deletedId: clipId, snapshot });
@@ -331,11 +433,204 @@ export function createApiApp() {
     }
   });
 
-  // 7. Manual test trigger: Process & upload oldest pending clip immediately
-  app.post('/api/queue/process-next', async (_req, res) => {
+  // 6b. Stream rendered final Short (or raw source) for admin test preview
+  app.get('/api/clips/:id/preview', requireAdmin, async (req, res) => {
+    try {
+      const clipId = String(req.params.id || '').trim();
+      const container = getAppContainer();
+      const clip = await container.queueRepo.getClipById(clipId);
+      if (!clip) {
+        res.status(404).json({ error: 'Clip not found.' });
+        return;
+      }
+
+      const sourceMode = req.query.source === 'raw' ? 'raw' : 'rendered';
+      const targetUrl =
+        sourceMode === 'raw' ? clip.blobUrl : clip.renderedVideoUrl || clip.blobUrl;
+
+      if (targetUrl.startsWith('https://') || targetUrl.startsWith('http://')) {
+        res.redirect(302, targetUrl);
+        return;
+      }
+
+      const localPath = container.storage.resolveLocalFilePath?.(targetUrl) ?? null;
+      if (!localPath) {
+        res.status(404).json({ error: 'Preview video file is unavailable.' });
+        return;
+      }
+
+      const stat = await fs.stat(localPath).catch(() => null);
+      if (!stat || !stat.isFile()) {
+        res.status(404).json({ error: 'Preview video file not found on disk.' });
+        return;
+      }
+
+      const fileSize = stat.size;
+      const contentType =
+        sourceMode === 'raw' ? clip.mimeType || 'video/mp4' : 'video/mp4';
+      const rangeHeader = req.headers.range;
+
+      if (rangeHeader) {
+        const match = /^bytes=(\d+)-(\d*)$/.exec(rangeHeader);
+        if (!match) {
+          res.status(416).set('Content-Range', `bytes */${fileSize}`).end();
+          return;
+        }
+        const start = Number.parseInt(match[1], 10);
+        const rawEnd = match[2] ? Number.parseInt(match[2], 10) : fileSize - 1;
+        const end = Math.min(rawEnd, fileSize - 1);
+        if (start >= fileSize || start > end) {
+          res.status(416).set('Content-Range', `bytes */${fileSize}`).end();
+          return;
+        }
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': end - start + 1,
+          'Content-Type': contentType,
+          'Cache-Control': 'no-store',
+        });
+        fsSync.createReadStream(localPath, { start, end }).pipe(res);
+        return;
+      }
+
+      res.writeHead(200, {
+        'Accept-Ranges': 'bytes',
+        'Content-Length': fileSize,
+        'Content-Type': contentType,
+        'Cache-Control': 'no-store',
+      });
+      fsSync.createReadStream(localPath).pipe(res);
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to stream preview video.',
+      });
+    }
+  });
+
+  // 6c. Manual approval gate (Admin Test Pipeline): publish a ready_for_review Short to YouTube
+  app.post('/api/clips/:id/approve', requireAdmin, async (req, res) => {
+    if (pipelineInFlight) {
+      res.status(409).json({ error: 'Another clip job is currently in progress.' });
+      return;
+    }
+
+    pipelineInFlight = true;
+    try {
+      const clipId = String(req.params.id || '').trim();
+      const container = getAppContainer();
+      const outcome = await container.orchestrator.approveAndPublishClip(clipId);
+      const snapshot = await buildDashboardSnapshot();
+      res.json({ ...outcome, snapshot });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to approve and upload clip.',
+      });
+    } finally {
+      pipelineInFlight = false;
+    }
+  });
+
+  // 6d. Re-roll crowd audio & re-render (Admin Test Pipeline)
+  app.post('/api/clips/:id/rerender', requireAdmin, async (req, res) => {
+    try {
+      const clipId = String(req.params.id || '').trim();
+      const container = getAppContainer();
+      const existing = await container.queueRepo.getClipById(clipId);
+      if (!existing) {
+        res.status(404).json({ error: 'Clip not found.' });
+        return;
+      }
+      if (existing.renderedVideoUrl) {
+        await container.storage.deleteObject(existing.renderedVideoUrl).catch(() => {});
+      }
+      const updated = await container.queueRepo.requeueClip(clipId);
+      if (!updated) {
+        res.status(400).json({ error: 'Only failed or ready-for-review clips can be re-queued.' });
+        return;
+      }
+      const snapshot = await buildDashboardSnapshot();
+      res.json({ clip: updated, snapshot });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Could not requeue clip for re-render.',
+      });
+    }
+  });
+
+  // 6e. List saved audio preview variants for a clip (Admin Test Pipeline)
+  app.get('/api/clips/:id/variants', requireAdmin, async (req, res) => {
+    try {
+      const clipId = String(req.params.id || '').trim();
+      const container = getAppContainer();
+      const existing = await container.queueRepo.getClipById(clipId);
+      if (!existing) {
+        res.status(404).json({ error: 'Clip not found.' });
+        return;
+      }
+      const availableVariants = await container.orchestrator.listSavedVariants(existing);
+      res.json({ clipId, availableVariants });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to list saved preview variants.',
+      });
+    }
+  });
+
+  // 6f. Switch to a saved audio option or generate a realtime option (Admin Test Pipeline)
+  app.post('/api/clips/:id/render-option', requireAdmin, async (req, res) => {
+    if (pipelineInFlight) {
+      res.status(409).json({ error: 'Another render job is currently in progress.' });
+      return;
+    }
+
+    const optionSchema = z.object({
+      mode: z.enum([
+        'broadcast-shout-1',
+        'broadcast-shout-2',
+        'broadcast-crowd-only',
+        'pure-crowd',
+      ]),
+      delayOffsetSec: z.number().min(-0.8).max(1.0).optional(),
+      regenerate: z.boolean().optional(),
+    });
+    const parsed = optionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid audio option payload.' });
+      return;
+    }
+
+    pipelineInFlight = true;
+    try {
+      const clipId = String(req.params.id || '').trim();
+      const container = getAppContainer();
+      const outcome = await container.orchestrator.renderAudioOption(clipId, parsed.data);
+      const snapshot = await buildDashboardSnapshot();
+      res.json({ ...outcome, snapshot });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to render audio option.',
+      });
+    } finally {
+      pipelineInFlight = false;
+    }
+  });
+
+  // 7. Manual trigger: Process & auto-publish oldest pending clip (or enter Test Preview if admin passes testPreview=true)
+  app.post('/api/queue/process-next', requireAuth, async (req, res) => {
+    const user = res.locals.user as AuthUser;
+    const isAdminTestPreview = user.role === 'admin' && req.body?.testPreview === true;
+
     // On Vercel there is no FFmpeg and functions time out quickly, so hand the
     // run off to the GitHub Actions worker instead of processing in-function.
     if (process.env.VERCEL) {
+      if (isAdminTestPreview) {
+        res.status(400).json({
+          error:
+            'Interactive Test Preview requires FFmpeg and runs locally (`npm run dev`). Use Process Next (Auto) or GitHub Actions in production.',
+        });
+        return;
+      }
       try {
         const snapshot = await buildDashboardSnapshot();
         const hasPending = snapshot.clips.some((c) => c.status === 'pending');
@@ -395,7 +690,9 @@ export function createApiApp() {
     pipelineInFlight = true;
     try {
       const container = getAppContainer();
-      const outcome = await container.orchestrator.processOldestPendingClip();
+      const outcome = await container.orchestrator.processOldestPendingClip({
+        requireApproval: isAdminTestPreview,
+      });
       const snapshot = await buildDashboardSnapshot();
       res.json({ ...outcome, snapshot });
     } catch (err) {
@@ -408,7 +705,7 @@ export function createApiApp() {
   });
 
   // 8. One-Click YouTube OAuth URL
-  app.get('/api/auth/youtube/url', (_req, res) => {
+  app.get('/api/auth/youtube/url', requireAuth, (_req, res) => {
     if (!isYouTubeOAuthConfigured()) {
       res.status(400).json({
         error: 'YouTube OAuth credentials are not configured on the server yet.',
@@ -486,7 +783,7 @@ export function createApiApp() {
   });
 
   // 10. Disconnect YouTube
-  app.post('/api/auth/youtube/disconnect', async (_req, res) => {
+  app.post('/api/auth/youtube/disconnect', requireAuth, async (_req, res) => {
     try {
       const container = getAppContainer();
       await container.channelRepo.clearTokens();

@@ -1,16 +1,31 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Clapperboard, LogOut, Play, Plus, Youtube } from 'lucide-react';
+import {
+  Clapperboard,
+  FlaskConical,
+  Loader2,
+  LogOut,
+  Play,
+  Plus,
+  Youtube,
+} from 'lucide-react';
 import { ClipInspectorDrawer } from './components/ClipInspectorDrawer';
+import { LoginScreen } from './components/LoginScreen';
 import { QueueTable } from './components/QueueTable';
 import { ShortsPreviewModal } from './components/ShortsPreviewModal';
 import { UploadHero } from './components/UploadHero';
+import type { AuthUser } from './core/auth/session';
 import { formatCountdown } from './core/domain/schedule';
-import type { DashboardSnapshot, QueueClip } from './core/domain/types';
+import type { CrowdAudioMode, DashboardSnapshot, QueueClip } from './core/domain/types';
 import {
+  approveClipUpload,
   deleteClip,
   disconnectYouTube,
+  fetchAuthMe,
   fetchDashboard,
   fetchYouTubeAuthUrl,
+  logoutUser,
+  renderClipAudioOption,
+  rerenderClip,
   retryClip,
   triggerProcessNext,
   uploadClips,
@@ -19,6 +34,8 @@ import {
 type ActivePage = 'upload' | 'backlog';
 
 export default function App() {
+  const [authChecked, setAuthChecked] = useState(false);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [activePage, setActivePage] = useState<ActivePage>('upload');
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -29,6 +46,10 @@ export default function App() {
   } | null>(null);
   const [lastQueuedCount, setLastQueuedCount] = useState<number | null>(null);
   const [processingNext, setProcessingNext] = useState(false);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [rerenderingId, setRerenderingId] = useState<string | null>(null);
+  const [switchingOption, setSwitchingOption] = useState(false);
+  const [optionError, setOptionError] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [connectingYouTube, setConnectingYouTube] = useState(false);
@@ -39,23 +60,43 @@ export default function App() {
     message: string;
   } | null>(null);
 
+  const isAdmin = user?.role === 'admin';
+
+  useEffect(() => {
+    fetchAuthMe()
+      .then((res) => {
+        setUser(res.authenticated ? res.user : null);
+      })
+      .catch(() => {
+        setUser(null);
+      })
+      .finally(() => {
+        setAuthChecked(true);
+      });
+  }, []);
+
   const loadDashboard = useCallback(async () => {
     try {
       const data = await fetchDashboard();
       setSnapshot(data);
     } catch (err) {
-      setFeedback({
-        tone: 'error',
-        message: err instanceof Error ? err.message : 'Failed to load backlog.',
-      });
+      const msg = err instanceof Error ? err.message : 'Failed to load backlog.';
+      if (msg.toLowerCase().includes('authentication required')) {
+        setUser(null);
+        setSnapshot(null);
+      } else {
+        setFeedback({ tone: 'error', message: msg });
+      }
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void loadDashboard();
-  }, [loadDashboard]);
+    if (user) {
+      void loadDashboard();
+    }
+  }, [user, loadDashboard]);
 
   // Listen for OAuth popup completion via postMessage
   useEffect(() => {
@@ -95,14 +136,24 @@ export default function App() {
   );
 
   const inspectedClip: QueueClip | null = useMemo(() => {
-    if (!inspectedClipId) return null;
+    if (!inspectedClipId || !isAdmin) return null;
     return clips.find((c) => c.id === inspectedClipId) ?? null;
-  }, [clips, inspectedClipId]);
+  }, [clips, inspectedClipId, isAdmin]);
 
   const previewClip: QueueClip | null = useMemo(() => {
-    if (!previewClipId) return null;
+    if (!previewClipId || !isAdmin) return null;
     return clips.find((c) => c.id === previewClipId) ?? null;
-  }, [clips, previewClipId]);
+  }, [clips, previewClipId, isAdmin]);
+
+  const handleLogout = async () => {
+    await logoutUser().catch(() => {});
+    setUser(null);
+    setSnapshot(null);
+    setInspectedClipId(null);
+    setPreviewClipId(null);
+    setFeedback(null);
+    setActivePage('upload');
+  };
 
   const handleUploadFiles = async (files: File[]) => {
     setUploading(true);
@@ -116,11 +167,6 @@ export default function App() {
       });
       setSnapshot(result.snapshot);
       setLastQueuedCount(result.uploadedCount);
-      const newestClip = result.clips[0] ?? result.snapshot.clips[0] ?? null;
-      if (newestClip) {
-        setActivePage('backlog');
-        setPreviewClipId(newestClip.id);
-      }
     } catch (err) {
       setFeedback({
         tone: 'error',
@@ -174,20 +220,23 @@ export default function App() {
     }
   };
 
-  const handleProcessNext = async () => {
+  const handleProcessNext = async (testPreview: boolean = false) => {
     setProcessingNext(true);
     setFeedback(null);
     try {
-      const result = await triggerProcessNext();
+      const result = await triggerProcessNext({ testPreview: isAdmin && testPreview });
       setSnapshot(result.snapshot);
       if (!result.processed) {
         setFeedback({ tone: 'info', message: result.message });
+      } else if (isAdmin && result.clip?.status === 'ready_for_review') {
+        setFeedback({ tone: 'success', message: result.message });
+        setPreviewClipId(result.clip.id);
       } else if (result.clip?.status === 'uploaded') {
         setFeedback({ tone: 'success', message: result.message });
-        setInspectedClipId(result.clip.id);
+        if (isAdmin) setInspectedClipId(result.clip.id);
       } else {
         setFeedback({ tone: 'error', message: result.message });
-        if (result.clip) setInspectedClipId(result.clip.id);
+        if (isAdmin && result.clip) setInspectedClipId(result.clip.id);
       }
     } catch (err) {
       setFeedback({
@@ -196,6 +245,71 @@ export default function App() {
       });
     } finally {
       setProcessingNext(false);
+    }
+  };
+
+  const handleApproveClip = async (clipId: string) => {
+    setApprovingId(clipId);
+    setFeedback(null);
+    try {
+      const result = await approveClipUpload(clipId);
+      setSnapshot(result.snapshot);
+      if (result.clip?.status === 'uploaded') {
+        setFeedback({ tone: 'success', message: result.message });
+        setPreviewClipId(null);
+        setInspectedClipId(result.clip.id);
+      } else {
+        setFeedback({ tone: result.processed ? 'error' : 'info', message: result.message });
+      }
+    } catch (err) {
+      setFeedback({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Could not upload Short to YouTube.',
+      });
+    } finally {
+      setApprovingId(null);
+    }
+  };
+
+  const handleRerenderClip = async (clipId: string) => {
+    setRerenderingId(clipId);
+    setFeedback(null);
+    try {
+      const result = await rerenderClip(clipId);
+      setSnapshot(result.snapshot);
+      setPreviewClipId(null);
+      setFeedback({
+        tone: 'info',
+        message: `"${result.clip.originalFilename}" returned to Pending.`,
+      });
+    } catch (err) {
+      setFeedback({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Could not re-queue clip.',
+      });
+    } finally {
+      setRerenderingId(null);
+    }
+  };
+
+  const handleRenderAudioOption = async (
+    clipId: string,
+    payload: { mode: CrowdAudioMode; delayOffsetSec?: number; regenerate?: boolean }
+  ): Promise<CrowdAudioMode[] | undefined> => {
+    setSwitchingOption(true);
+    setOptionError(null);
+    try {
+      const result = await renderClipAudioOption(clipId, payload);
+      setSnapshot(result.snapshot);
+      if (!result.processed) {
+        setOptionError(result.message);
+      }
+      return result.availableVariants;
+    } catch (err) {
+      setOptionError(err instanceof Error ? err.message : 'Failed to generate audio option.');
+      return undefined;
+    } finally {
+      setSwitchingOption(false);
     }
   };
 
@@ -216,10 +330,7 @@ export default function App() {
       setConnectingYouTube(false);
       setFeedback({
         tone: 'error',
-        message:
-          err instanceof Error
-            ? err.message
-            : 'YouTube OAuth is not configured on this server yet.',
+        message: err instanceof Error ? err.message : 'Could not start YouTube connection.',
       });
     }
   };
@@ -229,7 +340,10 @@ export default function App() {
     try {
       const result = await disconnectYouTube();
       setSnapshot(result.snapshot);
-      setFeedback({ tone: 'info', message: 'YouTube channel disconnected.' });
+      setFeedback({
+        tone: 'info',
+        message: 'YouTube channel disconnected.',
+      });
     } catch (err) {
       setFeedback({
         tone: 'error',
@@ -238,9 +352,31 @@ export default function App() {
     }
   };
 
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen bg-[#F5F5FA] flex items-center justify-center text-[#57606A]">
+        <div className="inline-flex items-center gap-2 text-sm font-medium">
+          <Loader2 className="w-4 h-4 animate-spin text-[#E5322D]" />
+          <span>Loading GoalCast AI...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <LoginScreen
+        onSuccess={(loggedInUser) => {
+          setUser(loggedInUser);
+          setLoading(true);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#F5F5FA] text-[#1F2328] flex flex-col">
-      {/* Minimal iLovePDF-style Top Navigation Bar */}
+      {/* Top Navigation Bar */}
       <header className="h-16 bg-white border-b border-[#E5E7EB] sticky top-0 z-30">
         <div className="h-full max-w-6xl mx-auto px-3 sm:px-6 flex items-center justify-between gap-2 sm:gap-4">
           <div className="flex items-center gap-2 sm:gap-7 min-w-0">
@@ -287,11 +423,11 @@ export default function App() {
             </nav>
           </div>
 
-          {/* Right: Single YouTube Connection Control */}
+          {/* Right: YouTube Connection + Session Sign Out */}
           <div className="flex items-center gap-2 shrink-0">
             {snapshot?.channel.connected ? (
               <div className="flex items-center gap-1.5 sm:gap-2">
-                <span className="hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold text-[#1F2328] max-w-[160px] truncate">
+                <span className="hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold text-[#1F2328] max-w-[150px] truncate">
                   <Youtube className="w-4 h-4 text-[#E5322D] shrink-0" />
                   <span className="truncate">
                     {snapshot.channel.channelTitle || 'YouTube Connected'}
@@ -321,6 +457,22 @@ export default function App() {
                 </span>
               </button>
             )}
+
+            <div className="h-5 w-px bg-[#E5E7EB] hidden sm:block" aria-hidden="true" />
+
+            {isAdmin && (
+              <span className="hidden md:inline-flex items-center px-2 py-0.5 rounded-md bg-[#FFF1F1] border border-[#FECACA] text-[10px] font-mono font-semibold text-[#E5322D]">
+                ADMIN
+              </span>
+            )}
+
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="min-h-[40px] px-2.5 sm:px-3 inline-flex items-center justify-center text-xs font-semibold text-[#57606A] hover:text-[#1F2328] hover:bg-[#F5F5FA] rounded-lg transition-colors whitespace-nowrap shrink-0"
+            >
+              Sign out
+            </button>
           </div>
         </div>
       </header>
@@ -350,7 +502,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Content: Only Upload or Backlog */}
+      {/* Main Content */}
       <main className="flex-1">
         {activePage === 'upload' ? (
           <UploadHero
@@ -373,7 +525,7 @@ export default function App() {
                 </p>
               </div>
 
-              <div className="flex items-center gap-2.5">
+              <div className="flex flex-wrap items-center gap-2.5">
                 <button
                   type="button"
                   onClick={() => setActivePage('upload')}
@@ -383,9 +535,21 @@ export default function App() {
                   <span>Add Clips</span>
                 </button>
 
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => void handleProcessNext(true)}
+                    disabled={processingNext || pendingCount === 0}
+                    className="min-h-[42px] px-4 inline-flex items-center justify-center gap-1.5 text-xs sm:text-sm font-semibold text-[#1D4ED8] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] rounded-lg transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
+                  >
+                    <FlaskConical className="w-3.5 h-3.5" />
+                    <span>{processingNext ? 'Running...' : 'Test Preview'}</span>
+                  </button>
+                )}
+
                 <button
                   type="button"
-                  onClick={handleProcessNext}
+                  onClick={() => void handleProcessNext(false)}
                   disabled={processingNext || pendingCount === 0}
                   className="min-h-[42px] px-4 inline-flex items-center justify-center gap-2 text-xs sm:text-sm font-semibold text-white bg-[#E5322D] hover:bg-[#C92420] rounded-lg transition-colors whitespace-nowrap shrink-0 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#E5322D]"
                 >
@@ -398,10 +562,13 @@ export default function App() {
             <QueueTable
               clips={clips}
               loading={loading}
+              isAdmin={isAdmin}
               retryingId={retryingId}
               deletingId={deletingId}
+              approvingId={approvingId}
               onInspect={(clip) => setInspectedClipId(clip.id)}
               onPreview={(clip) => setPreviewClipId(clip.id)}
+              onApprove={handleApproveClip}
               onRetry={handleRetryClip}
               onDelete={handleDeleteClip}
             />
@@ -409,21 +576,37 @@ export default function App() {
         )}
       </main>
 
-      <ClipInspectorDrawer
-        clip={inspectedClip}
-        retrying={retryingId === inspectedClip?.id}
-        onClose={() => setInspectedClipId(null)}
-        onPreview={(clip) => setPreviewClipId(clip.id)}
-        onRetry={handleRetryClip}
-        onDelete={handleDeleteClip}
-      />
+      {isAdmin && (
+        <>
+          <ClipInspectorDrawer
+            clip={inspectedClip}
+            retrying={retryingId === inspectedClip?.id}
+            approving={approvingId === inspectedClip?.id}
+            onClose={() => setInspectedClipId(null)}
+            onPreview={(clip) => setPreviewClipId(clip.id)}
+            onApprove={handleApproveClip}
+            onRetry={handleRetryClip}
+            onDelete={handleDeleteClip}
+          />
 
-      <ShortsPreviewModal
-        clip={previewClip}
-        channelHandle={snapshot?.channel.channelHandle}
-        channelTitle={snapshot?.channel.channelTitle}
-        onClose={() => setPreviewClipId(null)}
-      />
+          <ShortsPreviewModal
+            clip={previewClip}
+            channelHandle={snapshot?.channel.channelHandle}
+            channelTitle={snapshot?.channel.channelTitle}
+            approving={approvingId === previewClip?.id}
+            rerendering={rerenderingId === previewClip?.id}
+            switchingOption={switchingOption}
+            optionError={optionError}
+            onClose={() => {
+              setOptionError(null);
+              setPreviewClipId(null);
+            }}
+            onApprove={handleApproveClip}
+            onRerender={handleRerenderClip}
+            onRenderOption={handleRenderAudioOption}
+          />
+        </>
+      )}
     </div>
   );
 }

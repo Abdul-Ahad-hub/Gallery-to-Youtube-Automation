@@ -7,19 +7,24 @@ import {
   ExternalLink,
   Film,
   Maximize2,
+  PlayCircle,
   RotateCcw,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react';
 import { isSafeYouTubeUrl } from '../core/domain/commentary-sync';
 import { formatFileSize } from '../core/domain/schedule';
 import type { CommentaryBeatType, QueueClip } from '../core/domain/types';
+import { getClipPreviewUrl } from '../services/api';
 
 interface ClipInspectorDrawerProps {
   clip: QueueClip | null;
   retrying: boolean;
+  approving: boolean;
   onClose: () => void;
   onPreview: (clip: QueueClip) => void;
+  onApprove: (clipId: string) => void;
   onRetry: (clipId: string) => void;
   onDelete: (clipId: string) => void;
 }
@@ -34,8 +39,10 @@ const BEAT_LABELS: Record<CommentaryBeatType, string> = {
 export function ClipInspectorDrawer({
   clip,
   retrying,
+  approving,
   onClose,
   onPreview,
+  onApprove,
   onRetry,
   onDelete,
 }: ClipInspectorDrawerProps) {
@@ -118,15 +125,22 @@ export function ClipInspectorDrawer({
               aria-label={`Open full 9:16 Shorts preview for ${clip.originalFilename}`}
               className="group w-[140px] sm:w-[148px] aspect-[9/16] rounded-lg overflow-hidden border border-[#E5E7EB] bg-black relative mx-auto sm:mx-0 text-left focus-visible:outline-2 focus-visible:outline-[#E5322D]"
             >
-              {!clip.storageCleanedAt &&
-              (clip.blobUrl.startsWith('https://') || clip.blobUrl.startsWith('http://')) ? (
+              {clip.renderedVideoUrl ||
+              (!clip.storageCleanedAt &&
+                (clip.blobUrl.startsWith('https://') ||
+                  clip.blobUrl.startsWith('http://') ||
+                  clip.blobUrl.startsWith('local://'))) ? (
                 <video
-                  src={clip.blobUrl}
+                  src={getClipPreviewUrl(
+                    clip.id,
+                    clip.renderedVideoUrl ? 'rendered' : 'raw',
+                    clip.updatedAt
+                  )}
                   autoPlay
                   loop
                   muted
                   playsInline
-                  className="w-full h-full object-cover"
+                  className={`w-full h-full ${clip.renderedVideoUrl ? 'object-contain' : 'object-cover'}`}
                 />
               ) : clip.thumbnailUrl && !imgFailed ? (
                 <img
@@ -194,16 +208,48 @@ export function ClipInspectorDrawer({
                   </div>
                 )}
 
+                {clip.status === 'ready_for_review' && (
+                  <div className="mt-1.5 space-y-3">
+                    <div className="flex items-center gap-1.5 text-sm font-semibold text-[#2563EB]">
+                      <PlayCircle className="w-4 h-4" />
+                      <span>Ready for Final Preview</span>
+                    </div>
+                    <p className="text-xs text-[#57606A] leading-relaxed">
+                      Not uploaded to YouTube yet. Watch the rendered Short with stadium crowd audio
+                      and click OK when ready to publish.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onPreview(clip)}
+                        className="min-h-[38px] inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-[#1D4ED8] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE] rounded-lg transition-colors whitespace-nowrap"
+                      >
+                        <Maximize2 className="w-3.5 h-3.5" />
+                        <span>Open Final Preview</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onApprove(clip.id)}
+                        disabled={approving}
+                        className="min-h-[38px] inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-[#16A34A] hover:bg-[#15803D] rounded-lg transition-colors whitespace-nowrap disabled:opacity-50"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>{approving ? 'Uploading...' : 'OK — Upload'}</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {clip.status === 'pending' && (
                   <p className="mt-1 text-sm text-[#57606A]">
-                    Queued for automatic publishing. AI will write the title, description, and
-                    synced commentary when processed.
+                    Queued for processing. We rotate landscape clips to full-res Shorts and mix
+                    stadium crowd ambience + goal roar before your final preview.
                   </p>
                 )}
 
                 {clip.status === 'processing' && (
                   <p className="mt-1 text-sm text-[#D97706]">
-                    Formatting video, generating AI commentary, and uploading to YouTube.
+                    Rotating video to full-res Short and mixing stadium crowd audio.
                   </p>
                 )}
               </div>
@@ -216,20 +262,20 @@ export function ClipInspectorDrawer({
                   </p>
                 </div>
                 <div>
-                  <p className="text-[#6E7781]">Voiceover</p>
+                  <p className="text-[#6E7781]">Audio Track</p>
                   <p className="mt-0.5 font-medium text-[#1F2328]">
-                    {clip.voiceProviderUsed || 'Auto (AI Voice)'}
+                    {clip.voiceProviderUsed || 'Stadium Crowd Mix'}
                   </p>
                 </div>
               </div>
             </div>
           </div>
 
-          {/* AI-Written YouTube Title & Description */}
+          {/* YouTube Shorts Title & Description */}
           {(clip.shortsTitle || clip.shortsDescription) && (
             <div className="pt-4 border-t border-[#ECEEF2] space-y-2.5">
               <h3 className="font-display text-lg font-bold tracking-tight text-[#1F2328]">
-                AI-Written Title &amp; Description
+                Shorts Title &amp; Description
               </h3>
               <div className="border border-[#E5E7EB] rounded-lg bg-[#FAFAFC] p-4 space-y-3 text-xs">
                 <div>
@@ -248,15 +294,15 @@ export function ClipInspectorDrawer({
             </div>
           )}
 
-          {/* Synced Commentary Script */}
+          {/* Stadium Audio Mix */}
           <div className="pt-4 border-t border-[#ECEEF2] space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="min-w-0">
                 <h3 className="font-display text-lg font-bold tracking-tight text-[#1F2328]">
-                  Synced Commentary Script
+                  Stadium Audio Mix
                 </h3>
                 <p className="text-xs text-[#6E7781]">
-                  Timed to buildup, strike, net impact, and celebration
+                  0.0s–5.15s normal crowd ambience + 5.15s–6.0s goal roar burst
                 </p>
               </div>
               {clip.commentaryScript && (
@@ -270,7 +316,7 @@ export function ClipInspectorDrawer({
                   ) : (
                     <Copy className="w-3.5 h-3.5" />
                   )}
-                  <span>{copied ? 'Copied' : 'Copy Script'}</span>
+                  <span>{copied ? 'Copied' : 'Copy Details'}</span>
                 </button>
               )}
             </div>
@@ -292,16 +338,23 @@ export function ClipInspectorDrawer({
                   </div>
                 ))}
               </div>
+            ) : clip.commentaryScript ? (
+              <div className="border border-[#E5E7EB] rounded-lg bg-[#FAFAFC] px-4 py-3.5 text-xs font-mono text-[#1F2328] whitespace-pre-line leading-relaxed">
+                {clip.commentaryScript}
+              </div>
             ) : (
               <div className="border border-[#E5E7EB] rounded-lg bg-[#FAFAFC] px-4 py-5 text-xs text-[#6E7781]">
-                AI will watch the clip and generate timed commentary when this Short is processed.
+                Stadium crowd ambience (0.0s–4.8s) and goal burst roar (4.8s–6.0s) will be mixed
+                automatically when you click Process Next.
               </div>
             )}
           </div>
         </div>
 
         {/* Footer */}
-        {(clip.status === 'pending' || clip.status === 'failed') && (
+        {(clip.status === 'pending' ||
+          clip.status === 'ready_for_review' ||
+          clip.status === 'failed') && (
           <div className="px-5 sm:px-6 py-3.5 border-t border-[#E5E7EB] bg-[#FAFAFC] flex items-center justify-end">
             <button
               type="button"

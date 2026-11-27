@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { envSchema } from '../../config/env.js';
+import { createSessionToken, verifyCredentials, verifySessionToken } from '../auth/session.js';
 import { isAllowedVercelBlobUrl } from '../providers/storage/vercel-blob-storage.js';
 import {
   canTransitionClipStatus,
@@ -23,6 +24,7 @@ function makeClip(overrides: Partial<QueueClip>): QueueClip {
     thumbnailUrl: '/src/assets/images/goal_top_corner_volley_1795253540408.jpg',
     status: 'pending',
     pipelineStage: 'queued',
+    renderedVideoUrl: null,
     voiceProviderUsed: null,
     commentaryScript: null,
     commentaryCues: [],
@@ -79,6 +81,9 @@ test('selectNextPendingClip returns null when backlog is empty', () => {
 
 test('canTransitionClipStatus enforces valid queue lifecycle transitions', () => {
   assert.equal(canTransitionClipStatus('pending', 'processing'), true);
+  assert.equal(canTransitionClipStatus('processing', 'ready_for_review'), true);
+  assert.equal(canTransitionClipStatus('ready_for_review', 'uploaded'), true);
+  assert.equal(canTransitionClipStatus('ready_for_review', 'pending'), true);
   assert.equal(canTransitionClipStatus('processing', 'uploaded'), true);
   assert.equal(canTransitionClipStatus('processing', 'failed'), true);
   assert.equal(canTransitionClipStatus('failed', 'pending'), true);
@@ -109,4 +114,23 @@ test('isAllowedVercelBlobUrl permits only HTTPS Vercel Blob storage hosts', () =
   );
   assert.equal(isAllowedVercelBlobUrl('http://127.0.0.1:3000/internal'), false);
   assert.equal(isAllowedVercelBlobUrl('https://evil.example.com/goal.mp4'), false);
+});
+
+test('auth credentials and signed session tokens separate user and admin roles', () => {
+  const prod = verifyCredentials('abdulahad', 'GoalCast@2026');
+  assert.equal(prod?.role, 'user');
+  assert.equal(prod?.username, 'abdulahad');
+
+  const admin = verifyCredentials('admin', 'GoalCastAdmin#2026');
+  assert.equal(admin?.role, 'admin');
+  assert.equal(admin?.username, 'admin');
+
+  assert.equal(verifyCredentials('admin', 'wrong-pass'), null);
+  assert.equal(verifyCredentials('unknown', 'GoalCast@2026'), null);
+
+  const token = createSessionToken(admin!);
+  const verified = verifySessionToken(token);
+  assert.equal(verified?.role, 'admin');
+  assert.equal(verified?.username, 'admin');
+  assert.equal(verifySessionToken(`${token}tampered`), null);
 });

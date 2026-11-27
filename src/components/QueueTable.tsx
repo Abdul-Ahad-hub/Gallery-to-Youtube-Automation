@@ -7,10 +7,12 @@ import {
   Eye,
   Film,
   Loader2,
+  PlayCircle,
   RotateCcw,
   Search,
   Smartphone,
   Trash2,
+  Upload,
 } from 'lucide-react';
 import { isSafeYouTubeUrl } from '../core/domain/commentary-sync';
 import { computePendingQueuePositions, formatFileSize } from '../core/domain/schedule';
@@ -21,10 +23,13 @@ type FilterTab = 'all' | ClipStatus;
 interface QueueTableProps {
   clips: QueueClip[];
   loading: boolean;
+  isAdmin: boolean;
   retryingId: string | null;
   deletingId: string | null;
+  approvingId: string | null;
   onInspect: (clip: QueueClip) => void;
   onPreview: (clip: QueueClip) => void;
+  onApprove: (clipId: string) => void;
   onRetry: (clipId: string) => void;
   onDelete: (clipId: string) => void;
 }
@@ -32,10 +37,12 @@ interface QueueTableProps {
 const STAGE_LABELS: Record<PipelineStage, string> = {
   queued: 'Waiting in queue',
   downloading: 'Downloading clip',
-  formatting_9_16: 'Formatting 9:16 vertical',
-  analyzing_video: 'Writing title & commentary',
-  synthesizing_voice: 'Generating commentary voice',
-  mixing_audio: 'Mixing commentary audio',
+  formatting_9_16: 'Rotating full-res Short',
+  analyzing_video: 'Preparing metadata',
+  generating_crowd_audio: 'Mixing stadium crowd audio',
+  synthesizing_voice: 'Preparing stadium audio',
+  mixing_audio: 'Muxing crowd audio track',
+  awaiting_approval: 'Ready for final preview',
   uploading_youtube: 'Publishing to YouTube',
   cleaning_storage: 'Cleaning temporary file',
   completed: 'Published',
@@ -84,6 +91,17 @@ function StatusDisplay({ clip }: { clip: QueueClip }) {
       </div>
     );
   }
+  if (clip.status === 'ready_for_review') {
+    return (
+      <div className="space-y-0.5">
+        <div className="flex items-center gap-1.5 text-xs font-semibold text-[#2563EB]">
+          <PlayCircle className="w-3.5 h-3.5 shrink-0" />
+          <span>Final Preview</span>
+        </div>
+        <p className="text-[11px] text-[#6B7280]">Waiting for OK</p>
+      </div>
+    );
+  }
   if (clip.status === 'processing') {
     return (
       <div className="space-y-0.5">
@@ -114,10 +132,13 @@ function StatusDisplay({ clip }: { clip: QueueClip }) {
 export function QueueTable({
   clips,
   loading,
+  isAdmin,
   retryingId,
   deletingId,
+  approvingId,
   onInspect,
   onPreview,
+  onApprove,
   onRetry,
   onDelete,
 }: QueueTableProps) {
@@ -131,6 +152,7 @@ export function QueueTable({
       all: clips.length,
       pending: clips.filter((c) => c.status === 'pending').length,
       processing: clips.filter((c) => c.status === 'processing').length,
+      ready_for_review: clips.filter((c) => c.status === 'ready_for_review').length,
       uploaded: clips.filter((c) => c.status === 'uploaded').length,
       failed: clips.filter((c) => c.status === 'failed').length,
     };
@@ -153,6 +175,9 @@ export function QueueTable({
     { id: 'all', label: 'All', count: counts.all },
     { id: 'pending', label: 'Pending', count: counts.pending },
     { id: 'processing', label: 'Processing', count: counts.processing },
+    ...(isAdmin
+      ? [{ id: 'ready_for_review' as const, label: 'Review', count: counts.ready_for_review }]
+      : []),
     { id: 'uploaded', label: 'Uploaded', count: counts.uploaded },
     { id: 'failed', label: 'Failed', count: counts.failed },
   ];
@@ -275,26 +300,47 @@ export function QueueTable({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => onPreview(clip)}
-                    aria-label={`Preview 9:16 Short for ${clip.originalFilename}`}
-                    className="flex-1 min-h-[42px] inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-[#1F2328] bg-[#F5F5FA] hover:bg-[#ECEEF4] border border-[#E5E7EB] rounded-lg transition-colors whitespace-nowrap"
-                  >
-                    <Smartphone className="w-3.5 h-3.5 text-[#E5322D]" />
-                    <span>9:16 Preview</span>
-                  </button>
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => onPreview(clip)}
+                      aria-label={`Preview 9:16 Short for ${clip.originalFilename}`}
+                      className={`flex-1 min-h-[42px] inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap ${
+                        clip.status === 'ready_for_review'
+                          ? 'text-[#1D4ED8] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE]'
+                          : 'text-[#1F2328] bg-[#F5F5FA] hover:bg-[#ECEEF4] border border-[#E5E7EB]'
+                      }`}
+                    >
+                      <Smartphone className="w-3.5 h-3.5 text-[#E5322D]" />
+                      <span>{clip.status === 'ready_for_review' ? 'Final Preview' : '9:16 Preview'}</span>
+                    </button>
+                  )}
 
-                  <button
-                    type="button"
-                    onClick={() => onInspect(clip)}
-                    aria-label={`Inspect ${clip.originalFilename}`}
-                    className="flex-1 min-h-[42px] inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-[#1F2328] bg-[#F5F5FA] hover:bg-[#ECEEF4] border border-[#E5E7EB] rounded-lg transition-colors whitespace-nowrap"
-                  >
-                    <Eye className="w-3.5 h-3.5" />
-                    <span>Details</span>
-                  </button>
+                  {isAdmin && clip.status === 'ready_for_review' && (
+                    <button
+                      type="button"
+                      onClick={() => onApprove(clip.id)}
+                      disabled={approvingId === clip.id}
+                      aria-label={`Approve and upload ${clip.originalFilename}`}
+                      className="flex-1 min-h-[42px] inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-[#16A34A] hover:bg-[#15803D] rounded-lg transition-colors whitespace-nowrap disabled:opacity-50"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>{approvingId === clip.id ? 'Uploading...' : 'OK — Upload'}</span>
+                    </button>
+                  )}
+
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => onInspect(clip)}
+                      aria-label={`Inspect ${clip.originalFilename}`}
+                      className="flex-1 min-h-[42px] inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-[#1F2328] bg-[#F5F5FA] hover:bg-[#ECEEF4] border border-[#E5E7EB] rounded-lg transition-colors whitespace-nowrap"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>Details</span>
+                    </button>
+                  )}
 
                   {clip.status === 'failed' && (
                     <button
@@ -322,7 +368,9 @@ export function QueueTable({
                     </a>
                   )}
 
-                  {(clip.status === 'pending' || clip.status === 'failed') && (
+                  {(clip.status === 'pending' ||
+                    clip.status === 'ready_for_review' ||
+                    clip.status === 'failed') && (
                     <button
                       type="button"
                       onClick={() => onDelete(clip.id)}
@@ -428,7 +476,7 @@ export function QueueTable({
                             {clip.shortsTitle
                               ? clip.originalFilename
                               : clip.status === 'pending'
-                                ? 'AI will write title, description & commentary'
+                                ? 'Stadium crowd audio + full-res Short'
                                 : STAGE_LABELS[clip.pipelineStage]}
                           </p>
                           {clip.status === 'failed' && clip.errorMessage && (
@@ -470,25 +518,46 @@ export function QueueTable({
 
                     <td className="py-3.5 pl-3 pr-5 whitespace-nowrap text-right">
                       <div className="inline-flex items-center justify-end gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => onPreview(clip)}
-                          aria-label={`Preview 9:16 Short for ${clip.originalFilename}`}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-[#1F2328] bg-[#F5F5FA] hover:bg-[#ECEEF4] border border-[#E5E7EB] rounded-lg transition-colors whitespace-nowrap"
-                        >
-                          <Smartphone className="w-3.5 h-3.5 text-[#E5322D]" />
-                          <span>Preview 9:16</span>
-                        </button>
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => onPreview(clip)}
+                            aria-label={`Preview 9:16 Short for ${clip.originalFilename}`}
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap ${
+                              clip.status === 'ready_for_review'
+                                ? 'text-[#1D4ED8] bg-[#EFF6FF] hover:bg-[#DBEAFE] border border-[#BFDBFE]'
+                                : 'text-[#1F2328] bg-[#F5F5FA] hover:bg-[#ECEEF4] border border-[#E5E7EB]'
+                            }`}
+                          >
+                            <Smartphone className="w-3.5 h-3.5 text-[#E5322D]" />
+                            <span>{clip.status === 'ready_for_review' ? 'Final Preview' : 'Preview 9:16'}</span>
+                          </button>
+                        )}
 
-                        <button
-                          type="button"
-                          onClick={() => onInspect(clip)}
-                          aria-label={`Inspect ${clip.originalFilename}`}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-[#1F2328] bg-[#F5F5FA] hover:bg-[#ECEEF4] border border-[#E5E7EB] rounded-lg transition-colors whitespace-nowrap"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                          <span>Details</span>
-                        </button>
+                        {isAdmin && clip.status === 'ready_for_review' && (
+                          <button
+                            type="button"
+                            onClick={() => onApprove(clip.id)}
+                            disabled={approvingId === clip.id}
+                            aria-label={`Approve and upload ${clip.originalFilename}`}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-white bg-[#16A34A] hover:bg-[#15803D] rounded-lg transition-colors whitespace-nowrap disabled:opacity-50"
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                            <span>{approvingId === clip.id ? 'Uploading...' : 'OK — Upload'}</span>
+                          </button>
+                        )}
+
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => onInspect(clip)}
+                            aria-label={`Inspect ${clip.originalFilename}`}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-[#1F2328] bg-[#F5F5FA] hover:bg-[#ECEEF4] border border-[#E5E7EB] rounded-lg transition-colors whitespace-nowrap"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>Details</span>
+                          </button>
+                        )}
 
                         {clip.status === 'failed' && (
                           <button
@@ -516,7 +585,9 @@ export function QueueTable({
                           </a>
                         )}
 
-                        {(clip.status === 'pending' || clip.status === 'failed') && (
+                        {(clip.status === 'pending' ||
+                          clip.status === 'ready_for_review' ||
+                          clip.status === 'failed') && (
                           <button
                             type="button"
                             onClick={() => onDelete(clip.id)}
