@@ -120,6 +120,7 @@ export class LocalCrowdAudioProvider implements ICrowdAudioProvider {
     const introTempPath = `${input.outputAudioPath}.intro.mp3`;
     let hasIntroVoice = false;
     let elevenLabsFailed = false;
+    let elevenLabsFallbackReason: string | null = null;
 
     try {
       if (wantsIntro) {
@@ -147,14 +148,19 @@ export class LocalCrowdAudioProvider implements ICrowdAudioProvider {
           } catch (elErr) {
             elevenLabsFailed = true;
             effectiveMode = 'pure-crowd';
+            const rawMsg = (elErr instanceof Error ? elErr.message : String(elErr))
+              .replace(/\s+/g, ' ')
+              .trim();
+            elevenLabsFallbackReason = rawMsg.slice(0, 140) || 'request error';
             console.warn(
               '[GoalCast Audio] ElevenLabs unavailable, falling back to pure-crowd:',
-              elErr instanceof Error ? elErr.message : String(elErr)
+              rawMsg
             );
           }
         } else {
           elevenLabsFailed = true;
           effectiveMode = 'pure-crowd';
+          elevenLabsFallbackReason = 'ELEVENLABS_API_KEY not configured';
           console.warn('[GoalCast Audio] ELEVENLABS_API_KEY missing, falling back to pure-crowd.');
         }
       }
@@ -215,7 +221,9 @@ export class LocalCrowdAudioProvider implements ICrowdAudioProvider {
       'broadcast-shout-1': 'Commentary + "What a strike!"',
       'broadcast-shout-2': 'Commentary + "GOOOAL!!"',
       'broadcast-crowd-only': 'Commentary + Crowd Roar',
-      'pure-crowd': elevenLabsFailed ? 'Crowd Only (ElevenLabs fallback)' : 'Crowd Only',
+      'pure-crowd': elevenLabsFailed
+        ? `Crowd Only (ElevenLabs fallback${elevenLabsFallbackReason ? `: ${elevenLabsFallbackReason}` : ''})`
+        : 'Crowd Only',
     };
 
     return {

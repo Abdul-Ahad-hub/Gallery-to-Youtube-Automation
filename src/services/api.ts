@@ -52,11 +52,52 @@ export async function fetchDashboard(): Promise<DashboardSnapshot> {
   return parseJsonResponse<DashboardSnapshot>(response);
 }
 
+export interface SkippedDuplicate {
+  filename: string;
+  reason: string;
+}
+
+export async function computeFileSha256(file: File): Promise<string | undefined> {
+  try {
+    const subtle = globalThis.crypto?.subtle;
+    if (!subtle) return undefined;
+    const buffer = await file.arrayBuffer();
+    const digest = await subtle.digest('SHA-256', buffer);
+    return Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('');
+  } catch {
+    return undefined;
+  }
+}
+
+export async function checkDuplicateClips(
+  files: Array<{
+    originalFilename: string;
+    fileSizeBytes: number;
+    contentHash?: string;
+  }>
+): Promise<{
+  duplicates: Array<{
+    index: number;
+    originalFilename: string;
+    reason: string;
+    existingClipId?: string;
+    existingStatus?: string;
+  }>;
+}> {
+  const response = await fetch('/api/clips/check-duplicates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ files }),
+  });
+  return parseJsonResponse(response);
+}
+
 /**
  * Uploads 6-second football clips directly to Vercel Blob via client uploads
  * (bypassing Vercel's 4.5 MB serverless limit) and registers each clip as PENDING
- * in Neon PostgreSQL. Falls back to the local preview endpoint when running without
- * BLOB_READ_WRITE_TOKEN.
+ * in Neon PostgreSQL. Rejects duplicate videos before transferring bytes or processing.
  */
 export async function uploadClips(
   files: File[],
@@ -65,14 +106,49 @@ export async function uploadClips(
 ): Promise<{
   uploadedCount: number;
   clips: QueueClip[];
+  skippedDuplicates: SkippedDuplicate[];
   snapshot: DashboardSnapshot;
 }> {
+  const hashes = await Promise.all(files.map((file) => computeFileSha256(file)));
+  const preCheck = await checkDuplicateClips(
+    files.map((file, index) => ({
+      originalFilename: file.name,
+      fileSizeBytes: file.size,
+      contentHash: hashes[index],
+    }))
+  );
+
+  const duplicateReasonsByIndex = new Map<number, string>(
+    preCheck.duplicates.map((dup) => [dup.index, dup.reason])
+  );
+  const skippedDuplicates: SkippedDuplicate[] = [];
+  const filesToUpload: Array<{ file: File; contentHash?: string }> = [];
+
+  files.forEach((file, index) => {
+    const reason = duplicateReasonsByIndex.get(index);
+    if (reason) {
+      skippedDuplicates.push({ filename: file.name, reason });
+    } else {
+      filesToUpload.push({ file, contentHash: hashes[index] });
+    }
+  });
+
+  if (filesToUpload.length === 0) {
+    const snapshot = await fetchDashboard();
+    return {
+      uploadedCount: 0,
+      clips: [],
+      skippedDuplicates,
+      snapshot,
+    };
+  }
+
   if (uploadMode === 'vercel-blob') {
     const createdClips: QueueClip[] = [];
     let latestSnapshot: DashboardSnapshot | null = null;
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
+    for (let i = 0; i < filesToUpload.length; i++) {
+      const { file, contentHash } = filesToUpload[i];
       const pathname = buildSafeBlobPathname(file.name);
 
       const blob = await upload(pathname, file, {
@@ -88,9 +164,23 @@ export async function uploadClips(
           blobPathname: blob.pathname,
           originalFilename: file.name,
           fileSizeBytes: file.size,
+          contentHash,
           mimeType: file.type || 'video/mp4',
         }),
       });
+
+      if (registerResponse.status === 409) {
+        const payload = await registerResponse.json().catch(() => ({}));
+        skippedDuplicates.push({
+          filename: file.name,
+          reason:
+            typeof payload?.error === 'string' && payload.error.length > 0
+              ? payload.error
+              : `"${file.name}" is already in your backlog queue or published.`,
+        });
+        onProgress?.(i + 1, filesToUpload.length);
+        continue;
+      }
 
       const registered = await parseJsonResponse<{
         clip: QueueClip;
@@ -99,33 +189,57 @@ export async function uploadClips(
 
       createdClips.push(registered.clip);
       latestSnapshot = registered.snapshot;
-      onProgress?.(i + 1, files.length);
+      onProgress?.(i + 1, filesToUpload.length);
     }
 
     const snapshot = latestSnapshot ?? (await fetchDashboard());
     return {
       uploadedCount: createdClips.length,
       clips: createdClips,
+      skippedDuplicates,
       snapshot,
     };
   }
 
   // Local preview multipart upload fallback
   const formData = new FormData();
-  for (const file of files) {
+  for (const { file } of filesToUpload) {
     formData.append('files', file);
   }
   const response = await fetch('/api/clips/upload', {
     method: 'POST',
     body: formData,
   });
+
+  if (response.status === 409) {
+    const payload = await response.json().catch(() => ({}));
+    const serverSkipped = Array.isArray(payload?.skippedDuplicates)
+      ? (payload.skippedDuplicates as SkippedDuplicate[])
+      : [];
+    const snapshot =
+      (payload?.snapshot as DashboardSnapshot | undefined) ?? (await fetchDashboard());
+    onProgress?.(filesToUpload.length, filesToUpload.length);
+    return {
+      uploadedCount: 0,
+      clips: [],
+      skippedDuplicates: [...skippedDuplicates, ...serverSkipped],
+      snapshot,
+    };
+  }
+
   const result = await parseJsonResponse<{
     uploadedCount: number;
     clips: QueueClip[];
+    skippedDuplicates?: SkippedDuplicate[];
     snapshot: DashboardSnapshot;
   }>(response);
-  onProgress?.(files.length, files.length);
-  return result;
+  onProgress?.(filesToUpload.length, filesToUpload.length);
+  return {
+    uploadedCount: result.uploadedCount,
+    clips: result.clips,
+    skippedDuplicates: [...skippedDuplicates, ...(result.skippedDuplicates ?? [])],
+    snapshot: result.snapshot,
+  };
 }
 
 export async function retryClip(clipId: string): Promise<{

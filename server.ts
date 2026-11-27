@@ -18,8 +18,13 @@ import {
   type AuthUser,
 } from './src/core/auth/session.js';
 import { getAppContainer } from './src/core/container.js';
+import { findDuplicateClip, formatDuplicateReason } from './src/core/domain/duplicate.js';
 import { getUpcomingScheduleRuns } from './src/core/domain/schedule.js';
-import type { DashboardSnapshot, YouTubeChannelConnection } from './src/core/domain/types.js';
+import type {
+  DashboardSnapshot,
+  QueueClip,
+  YouTubeChannelConnection,
+} from './src/core/domain/types.js';
 import {
   createYouTubeOAuthClient,
   exchangeYouTubeAuthCode,
@@ -51,8 +56,27 @@ const registerBlobClipSchema = z.object({
   blobPathname: z.string().min(1).max(300),
   originalFilename: z.string().min(1).max(160),
   fileSizeBytes: z.number().int().min(1).max(50 * 1024 * 1024),
+  contentHash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/i)
+    .optional(),
   durationSec: z.number().min(0.5).max(30).optional().default(6.0),
   mimeType: z.string().min(1).max(80).default('video/mp4'),
+});
+
+const checkDuplicatesSchema = z.object({
+  files: z
+    .array(
+      z.object({
+        originalFilename: z.string().min(1).max(200),
+        fileSizeBytes: z.number().int().min(1),
+        contentHash: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/i)
+          .optional(),
+      })
+    )
+    .max(50),
 });
 
 let pipelineInFlight = false;
@@ -267,6 +291,101 @@ export function createApiApp() {
     }
   });
 
+  // 2b. Pre-upload duplicate check (runs before uploading bytes to Vercel Blob or multipart endpoint)
+  app.post('/api/clips/check-duplicates', requireAuth, async (req, res) => {
+    try {
+      const parsed = checkDuplicatesSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          error: parsed.error.issues[0]?.message || 'Invalid duplicate check payload.',
+        });
+        return;
+      }
+
+      const container = getAppContainer();
+      const existingClips = await container.queueRepo.listClips();
+      const seenInBatch: QueueClip[] = [];
+      const duplicates: Array<{
+        index: number;
+        originalFilename: string;
+        reason: string;
+        existingClipId?: string;
+        existingStatus?: string;
+      }> = [];
+
+      for (let index = 0; index < parsed.data.files.length; index++) {
+        const file = parsed.data.files[index];
+        const safeName = sanitizeFilename(file.originalFilename);
+        const normalizedHash = file.contentHash?.toLowerCase() ?? null;
+
+        const existingMatch = findDuplicateClip(existingClips, {
+          originalFilename: safeName,
+          fileSizeBytes: file.fileSizeBytes,
+          contentHash: normalizedHash,
+        });
+
+        if (existingMatch) {
+          duplicates.push({
+            index,
+            originalFilename: file.originalFilename,
+            reason: formatDuplicateReason(file.originalFilename, existingMatch),
+            existingClipId: existingMatch.id,
+            existingStatus: existingMatch.status,
+          });
+          continue;
+        }
+
+        const batchMatch = findDuplicateClip(seenInBatch, {
+          originalFilename: safeName,
+          fileSizeBytes: file.fileSizeBytes,
+          contentHash: normalizedHash,
+        });
+
+        if (batchMatch) {
+          duplicates.push({
+            index,
+            originalFilename: file.originalFilename,
+            reason: `"${file.originalFilename}" was selected twice in this upload — duplicate copy discarded.`,
+          });
+          continue;
+        }
+
+        seenInBatch.push({
+          id: `batch-${index}`,
+          originalFilename: safeName,
+          blobUrl: '',
+          blobPathname: '',
+          fileSizeBytes: file.fileSizeBytes,
+          contentHash: normalizedHash,
+          durationSec: 6.0,
+          mimeType: 'video/mp4',
+          thumbnailUrl: '',
+          status: 'pending',
+          pipelineStage: 'queued',
+          renderedVideoUrl: null,
+          voiceProviderUsed: null,
+          commentaryScript: null,
+          commentaryCues: [],
+          shortsTitle: null,
+          shortsDescription: null,
+          youtubeVideoId: null,
+          youtubeUrl: null,
+          errorMessage: null,
+          storageCleanedAt: null,
+          createdAt: '',
+          updatedAt: '',
+          processedAt: null,
+        });
+      }
+
+      res.json({ duplicates });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to check duplicates.',
+      });
+    }
+  });
+
   // 3. Persist completed Vercel Blob client upload as a PENDING job in Neon PostgreSQL
   app.post('/api/clips/register', requireAuth, async (req, res) => {
     try {
@@ -279,8 +398,26 @@ export function createApiApp() {
       }
 
       const container = getAppContainer();
-      const clipId = `clip-${crypto.randomUUID().slice(0, 8)}`;
       const safeName = sanitizeFilename(parsed.data.originalFilename);
+      const normalizedHash = parsed.data.contentHash?.toLowerCase() ?? null;
+      const existingClips = await container.queueRepo.listClips();
+      const duplicate = findDuplicateClip(existingClips, {
+        originalFilename: safeName,
+        fileSizeBytes: parsed.data.fileSizeBytes,
+        contentHash: normalizedHash,
+      });
+
+      if (duplicate) {
+        await container.storage.deleteObject(parsed.data.blobUrl).catch(() => {});
+        res.status(409).json({
+          error: formatDuplicateReason(parsed.data.originalFilename, duplicate),
+          duplicate: true,
+          existingClipId: duplicate.id,
+        });
+        return;
+      }
+
+      const clipId = `clip-${crypto.randomUUID().slice(0, 8)}`;
 
       const created = await container.queueRepo.createClip({
         id: clipId,
@@ -288,6 +425,7 @@ export function createApiApp() {
         blobUrl: parsed.data.blobUrl,
         blobPathname: parsed.data.blobPathname,
         fileSizeBytes: parsed.data.fileSizeBytes,
+        contentHash: normalizedHash,
         durationSec: parsed.data.durationSec,
         mimeType: parsed.data.mimeType,
         thumbnailUrl: pickThumbnailForId(clipId),
@@ -312,7 +450,10 @@ export function createApiApp() {
       }
 
       const container = getAppContainer();
+      const seenClips = await container.queueRepo.listClips();
+      const batchCreatedIds = new Set<string>();
       const createdClips = [];
+      const skippedDuplicates: Array<{ filename: string; reason: string }> = [];
 
       for (const file of uploadedFiles) {
         const ext = path.extname(file.originalname).toLowerCase();
@@ -324,8 +465,25 @@ export function createApiApp() {
           return;
         }
 
-        const clipId = `clip-${crypto.randomUUID().slice(0, 8)}`;
         const safeName = sanitizeFilename(file.originalname);
+        const contentHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
+        const duplicate = findDuplicateClip(seenClips, {
+          originalFilename: safeName,
+          fileSizeBytes: file.size,
+          contentHash,
+        });
+
+        if (duplicate) {
+          skippedDuplicates.push({
+            filename: file.originalname,
+            reason: batchCreatedIds.has(duplicate.id)
+              ? `"${file.originalname}" was selected twice in this upload — duplicate copy discarded.`
+              : formatDuplicateReason(file.originalname, duplicate),
+          });
+          continue;
+        }
+
+        const clipId = `clip-${crypto.randomUUID().slice(0, 8)}`;
         const pathname = `clips/${clipId}/${safeName}`;
 
         let durationSec = 6.0;
@@ -352,17 +510,30 @@ export function createApiApp() {
           blobUrl: uploaded.url,
           blobPathname: uploaded.pathname,
           fileSizeBytes: file.size,
+          contentHash,
           durationSec,
           mimeType: file.mimetype || 'video/mp4',
           thumbnailUrl: pickThumbnailForId(clipId),
         });
         createdClips.push(created);
+        seenClips.push(created);
+        batchCreatedIds.add(created.id);
       }
 
       const snapshot = await buildDashboardSnapshot();
+      if (createdClips.length === 0 && skippedDuplicates.length > 0) {
+        res.status(409).json({
+          error: skippedDuplicates.map((d) => d.reason).join(' '),
+          skippedDuplicates,
+          snapshot,
+        });
+        return;
+      }
+
       res.status(201).json({
         uploadedCount: createdClips.length,
         clips: createdClips,
+        skippedDuplicates,
         snapshot,
       });
     } catch (err) {

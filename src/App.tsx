@@ -30,6 +30,7 @@ import {
   retryClip,
   triggerProcessNext,
   uploadClips,
+  type SkippedDuplicate,
 } from './services/api';
 
 type ActivePage = 'upload' | 'backlog';
@@ -46,6 +47,7 @@ export default function App() {
     total: number;
   } | null>(null);
   const [lastQueuedCount, setLastQueuedCount] = useState<number | null>(null);
+  const [skippedDuplicates, setSkippedDuplicates] = useState<SkippedDuplicate[]>([]);
   const [processingNext, setProcessingNext] = useState(false);
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [rerenderingId, setRerenderingId] = useState<string | null>(null);
@@ -160,6 +162,7 @@ export default function App() {
     setUploading(true);
     setUploadProgress({ completed: 0, total: files.length });
     setLastQueuedCount(null);
+    setSkippedDuplicates([]);
     setFeedback(null);
     try {
       const uploadMode = snapshot?.uploadMode ?? 'local-preview';
@@ -167,7 +170,8 @@ export default function App() {
         setUploadProgress({ completed, total });
       });
       setSnapshot(result.snapshot);
-      setLastQueuedCount(result.uploadedCount);
+      setLastQueuedCount(result.uploadedCount > 0 ? result.uploadedCount : null);
+      setSkippedDuplicates(result.skippedDuplicates ?? []);
     } catch (err) {
       setFeedback({
         tone: 'error',
@@ -510,6 +514,7 @@ export default function App() {
             uploading={uploading}
             uploadProgress={uploadProgress}
             lastQueuedCount={lastQueuedCount}
+            skippedDuplicates={skippedDuplicates}
             onUploadFiles={handleUploadFiles}
             onOpenBacklog={() => setActivePage('backlog')}
           />

@@ -15,6 +15,7 @@ export interface CreateClipInput {
   blobUrl: string;
   blobPathname: string;
   fileSizeBytes: number;
+  contentHash?: string | null;
   durationSec: number;
   mimeType: string;
   thumbnailUrl: string;

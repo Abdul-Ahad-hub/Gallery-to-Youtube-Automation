@@ -1,10 +1,11 @@
 import { useRef, useState } from 'react';
-import { ArrowRight, CheckCircle2, Loader2, Upload } from 'lucide-react';
+import { AlertTriangle, ArrowRight, CheckCircle2, Loader2, Upload } from 'lucide-react';
 
 interface UploadHeroProps {
   uploading: boolean;
   uploadProgress: { completed: number; total: number } | null;
   lastQueuedCount: number | null;
+  skippedDuplicates: Array<{ filename: string; reason: string }>;
   onUploadFiles: (files: File[]) => Promise<void>;
   onOpenBacklog: () => void;
 }
@@ -13,6 +14,7 @@ export function UploadHero({
   uploading,
   uploadProgress,
   lastQueuedCount,
+  skippedDuplicates,
   onUploadFiles,
   onOpenBacklog,
 }: UploadHeroProps) {
@@ -130,6 +132,42 @@ export function UploadHero({
               <span>View Backlog</span>
               <ArrowRight className="w-4 h-4" />
             </button>
+          </div>
+        )}
+
+        {skippedDuplicates.length > 0 && !uploading && (
+          <div
+            role="status"
+            className="mt-4 w-full max-w-xl mx-auto text-left px-5 py-4 bg-[#FFFBEB] border border-[#FDE68A] rounded-xl shadow-[0_1px_4px_rgba(16,24,40,0.04)]"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-[#B45309] shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-semibold text-[#92400E]">
+                    {skippedDuplicates.length === 1
+                      ? 'Duplicate video discarded'
+                      : `${skippedDuplicates.length} duplicate videos discarded`}
+                  </p>
+                  <ul className="mt-1.5 space-y-1 text-xs sm:text-sm text-[#78350F]">
+                    {skippedDuplicates.map((item, idx) => (
+                      <li key={`${item.filename}-${idx}`}>{item.reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+
+              {(!lastQueuedCount || lastQueuedCount === 0) && (
+                <button
+                  type="button"
+                  onClick={onOpenBacklog}
+                  className="min-h-[34px] inline-flex items-center gap-1 px-3 py-1 text-xs font-semibold text-[#92400E] hover:bg-[#FEF3C7] rounded-lg transition-colors whitespace-nowrap shrink-0"
+                >
+                  <span>View Backlog</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>

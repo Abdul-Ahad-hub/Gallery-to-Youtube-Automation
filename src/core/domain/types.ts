@@ -63,6 +63,7 @@ export interface QueueClip {
   blobUrl: string;
   blobPathname: string;
   fileSizeBytes: number;
+  contentHash?: string | null;
   durationSec: number;
   mimeType: string;
   thumbnailUrl: string;

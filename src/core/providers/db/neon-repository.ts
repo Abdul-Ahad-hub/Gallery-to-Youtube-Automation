@@ -17,6 +17,7 @@ interface VideoQueueRow {
   blob_url: string;
   blob_pathname: string;
   file_size_bytes: string | number;
+  content_hash?: string | null;
   duration_sec: number;
   mime_type: string;
   thumbnail_url: string;
@@ -72,6 +73,7 @@ function mapRowToClip(row: VideoQueueRow): QueueClip {
     blobUrl: row.blob_url,
     blobPathname: row.blob_pathname,
     fileSizeBytes: Number(row.file_size_bytes),
+    contentHash: row.content_hash ?? null,
     durationSec: Number(row.duration_sec),
     mimeType: row.mime_type,
     thumbnailUrl: row.thumbnail_url,
@@ -96,12 +98,28 @@ function mapRowToClip(row: VideoQueueRow): QueueClip {
 export class NeonQueueRepository implements IQueueRepository {
   public readonly providerName = 'neon-postgres' as const;
   private readonly sql: ReturnType<typeof neon>;
+  private schemaReadyPromise: Promise<void> | null = null;
 
   constructor(databaseUrl: string) {
     this.sql = neon(databaseUrl);
   }
 
+  private async ensureSchema(): Promise<void> {
+    if (!this.schemaReadyPromise) {
+      this.schemaReadyPromise = this.sql`
+        ALTER TABLE video_queue ADD COLUMN IF NOT EXISTS content_hash TEXT
+      `
+        .then(() => undefined)
+        .catch((err) => {
+          this.schemaReadyPromise = null;
+          throw err;
+        });
+    }
+    return this.schemaReadyPromise;
+  }
+
   async listClips(): Promise<QueueClip[]> {
+    await this.ensureSchema();
     const rows = (await this.sql`
       SELECT * FROM video_queue
       ORDER BY
@@ -118,6 +136,7 @@ export class NeonQueueRepository implements IQueueRepository {
   }
 
   async getClipById(id: string): Promise<QueueClip | null> {
+    await this.ensureSchema();
     const rows = (await this.sql`
       SELECT * FROM video_queue WHERE id = ${id} LIMIT 1
     `) as unknown as VideoQueueRow[];
@@ -125,6 +144,7 @@ export class NeonQueueRepository implements IQueueRepository {
   }
 
   async createClip(input: CreateClipInput): Promise<QueueClip> {
+    await this.ensureSchema();
     const rows = (await this.sql`
       INSERT INTO video_queue (
         id,
@@ -132,6 +152,7 @@ export class NeonQueueRepository implements IQueueRepository {
         blob_url,
         blob_pathname,
         file_size_bytes,
+        content_hash,
         duration_sec,
         mime_type,
         thumbnail_url,
@@ -144,6 +165,7 @@ export class NeonQueueRepository implements IQueueRepository {
         ${input.blobUrl},
         ${input.blobPathname},
         ${input.fileSizeBytes},
+        ${input.contentHash ?? null},
         ${input.durationSec},
         ${input.mimeType},
         ${input.thumbnailUrl},
