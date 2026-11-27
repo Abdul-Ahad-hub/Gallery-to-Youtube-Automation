@@ -35,6 +35,7 @@ function createSeedClips(): QueueClip[] {
       thumbnailUrl: THUMB_VOLLEY,
       status: 'pending',
       pipelineStage: 'queued',
+      renderedVideoUrl: null,
       voiceProviderUsed: null,
       commentaryScript: null,
       commentaryCues: [],
@@ -59,6 +60,7 @@ function createSeedClips(): QueueClip[] {
       thumbnailUrl: THUMB_COUNTER,
       status: 'pending',
       pipelineStage: 'queued',
+      renderedVideoUrl: null,
       voiceProviderUsed: null,
       commentaryScript: null,
       commentaryCues: [],
@@ -83,6 +85,7 @@ function createSeedClips(): QueueClip[] {
       thumbnailUrl: THUMB_FREEKICK,
       status: 'uploaded',
       pipelineStage: 'completed',
+      renderedVideoUrl: null,
       voiceProviderUsed: 'ElevenLabs',
       commentaryCues: [
         {
@@ -138,6 +141,7 @@ function createSeedClips(): QueueClip[] {
       thumbnailUrl: THUMB_VOLLEY,
       status: 'uploaded',
       pipelineStage: 'completed',
+      renderedVideoUrl: null,
       voiceProviderUsed: 'Edge TTS',
       commentaryCues: [
         {
@@ -193,6 +197,7 @@ function createSeedClips(): QueueClip[] {
       thumbnailUrl: THUMB_COUNTER,
       status: 'failed',
       pipelineStage: 'failed',
+      renderedVideoUrl: null,
       voiceProviderUsed: null,
       commentaryScript: null,
       commentaryCues: [],
@@ -258,9 +263,10 @@ export class LocalPreviewRepository implements IQueueRepository, IChannelReposit
     const state = await this.readState();
     const order: Record<QueueClip['status'], number> = {
       processing: 0,
-      pending: 1,
-      failed: 2,
-      uploaded: 3,
+      ready_for_review: 1,
+      pending: 2,
+      failed: 3,
+      uploaded: 4,
     };
     return [...state.clips].sort((a, b) => {
       if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
@@ -287,6 +293,7 @@ export class LocalPreviewRepository implements IQueueRepository, IChannelReposit
         thumbnailUrl: input.thumbnailUrl,
         status: 'pending',
         pipelineStage: 'queued',
+        renderedVideoUrl: null,
         voiceProviderUsed: null,
         commentaryScript: null,
         commentaryCues: [],
@@ -348,6 +355,57 @@ export class LocalPreviewRepository implements IQueueRepository, IChannelReposit
     });
   }
 
+  async markReadyForReview(
+    id: string,
+    payload: {
+      renderedVideoUrl: string;
+      shortsTitle: string;
+      shortsDescription: string;
+      voiceProviderUsed: string;
+      commentaryScript: string;
+    }
+  ): Promise<QueueClip | null> {
+    return this.withLock((state) => {
+      const clip = state.clips.find((c) => c.id === id);
+      if (!clip) return null;
+      clip.status = 'ready_for_review';
+      clip.pipelineStage = 'awaiting_approval';
+      clip.renderedVideoUrl = payload.renderedVideoUrl;
+      clip.shortsTitle = payload.shortsTitle;
+      clip.shortsDescription = payload.shortsDescription;
+      clip.voiceProviderUsed = payload.voiceProviderUsed;
+      clip.commentaryScript = payload.commentaryScript;
+      clip.errorMessage = null;
+      clip.updatedAt = new Date().toISOString();
+      return { ...clip };
+    });
+  }
+
+  async claimClipForUpload(id: string): Promise<QueueClip | null> {
+    return this.withLock((state) => {
+      const clip = state.clips.find((c) => c.id === id);
+      if (!clip || clip.status !== 'ready_for_review') return null;
+      clip.status = 'processing';
+      clip.pipelineStage = 'uploading_youtube';
+      clip.errorMessage = null;
+      clip.updatedAt = new Date().toISOString();
+      return { ...clip };
+    });
+  }
+
+  async requeueClip(id: string): Promise<QueueClip | null> {
+    return this.withLock((state) => {
+      const clip = state.clips.find((c) => c.id === id);
+      if (!clip || (clip.status !== 'failed' && clip.status !== 'ready_for_review')) return null;
+      clip.status = 'pending';
+      clip.pipelineStage = 'queued';
+      clip.renderedVideoUrl = null;
+      clip.errorMessage = null;
+      clip.updatedAt = new Date().toISOString();
+      return { ...clip };
+    });
+  }
+
   async markUploaded(
     id: string,
     payload: {
@@ -367,6 +425,7 @@ export class LocalPreviewRepository implements IQueueRepository, IChannelReposit
       const now = new Date().toISOString();
       clip.status = 'uploaded';
       clip.pipelineStage = 'completed';
+      clip.renderedVideoUrl = null;
       clip.youtubeVideoId = payload.youtubeVideoId;
       clip.youtubeUrl = payload.youtubeUrl;
       clip.shortsTitle = payload.shortsTitle;

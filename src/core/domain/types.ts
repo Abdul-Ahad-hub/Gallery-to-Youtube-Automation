@@ -1,12 +1,30 @@
-export type ClipStatus = 'pending' | 'processing' | 'uploaded' | 'failed';
+export type ClipStatus = 'pending' | 'processing' | 'ready_for_review' | 'uploaded' | 'failed';
+
+export type CrowdAudioMode =
+  | 'broadcast-shout-1'
+  | 'broadcast-shout-2'
+  | 'broadcast-crowd-only'
+  | 'pure-crowd';
+
+export interface VideoSemanticTiming {
+  riseStartSec: number;
+  eruptSec: number;
+  buildupLine: string;
+  shortsTitle: string;
+  shortsDescription: string;
+  tags: string[];
+  elevenLabsPrompt: string;
+}
 
 export type PipelineStage =
   | 'queued'
   | 'downloading'
   | 'formatting_9_16'
   | 'analyzing_video'
+  | 'generating_crowd_audio'
   | 'synthesizing_voice'
   | 'mixing_audio'
+  | 'awaiting_approval'
   | 'uploading_youtube'
   | 'cleaning_storage'
   | 'completed'
@@ -50,6 +68,7 @@ export interface QueueClip {
   thumbnailUrl: string;
   status: ClipStatus;
   pipelineStage: PipelineStage;
+  renderedVideoUrl: string | null;
   voiceProviderUsed: string | null;
   commentaryScript: string | null;
   commentaryCues: CommentaryCue[];

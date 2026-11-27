@@ -1,8 +1,17 @@
 import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { GoogleGenAI, Type } from '@google/genai';
-import { normalizeGoalAnalysis } from '../../domain/commentary-sync.js';
-import type { GoalAnalysisResult } from '../../domain/types.js';
+import {
+  buildStructuredCrowdPrompt,
+  generateFootballShortMetadata,
+  normalizeGoalAnalysis,
+  normalizeShortsDescription,
+  normalizeShortsTitle,
+} from '../../domain/commentary-sync.js';
+import type { GoalAnalysisResult, VideoSemanticTiming } from '../../domain/types.js';
 import type { IVideoAnalyzer } from '../../interfaces/providers.js';
+import { createGeminiPreviewProxy } from '../video/ffmpeg-media.js';
 
 const GEMINI_MODELS = ['gemini-4-hydrogen', 'gemini-3.6-flash', 'gemini-3.5-flash'] as const;
 const MAX_INLINE_VIDEO_BYTES = 18 * 1024 * 1024;
@@ -204,5 +213,195 @@ export class GeminiGoalAnalyzer implements IVideoAnalyzer {
 
     const parsed = JSON.parse(rawText) as Omit<GoalAnalysisResult, 'fullScript'>;
     return normalizeGoalAnalysis(parsed, duration);
+  }
+
+  /**
+   * Watches the football goal video strictly to extract semantic crowd-reaction timing
+   * (when attack tension rises near goal, and exact split-second before ball touches net)
+   * plus a viral YouTube Shorts title & description — ZERO spoken commentary.
+   */
+  async analyzeSemanticTimingAndTitle(input: {
+    videoPath: string | null;
+    mimeType: string;
+    originalFilename: string;
+    durationSec: number;
+  }): Promise<VideoSemanticTiming> {
+    const duration = Math.max(2.0, Math.min(15.0, input.durationSec || 6.0));
+    const fallbackMeta = generateFootballShortMetadata(input.originalFilename);
+    const defaultRise = Number(Math.min(duration - 1.2, Math.max(0.5, duration * 0.58)).toFixed(2));
+    const defaultErupt = Number(
+      Math.min(duration - 0.3, Math.max(defaultRise + 0.5, duration >= 5.5 ? 4.85 : duration * 0.82)).toFixed(2)
+    );
+    const defaultBuildupLine = 'He drives into the box, opening up space for the strike...';
+
+    if (!this.apiKey) {
+      return {
+        riseStartSec: defaultRise,
+        eruptSec: defaultErupt,
+        buildupLine: defaultBuildupLine,
+        ...fallbackMeta,
+        elevenLabsPrompt: buildStructuredCrowdPrompt(defaultRise, defaultErupt, duration),
+      };
+    }
+
+    let proxyTempPath: string | null = null;
+    try {
+      const ai = this.getClient();
+      const parts: Array<
+        { inlineData: { mimeType: string; data: string } } | { text: string }
+      > = [];
+
+      if (input.videoPath) {
+        const stat = await fs.stat(input.videoPath).catch(() => null);
+        if (stat && stat.size > 0) {
+          let readPath = input.videoPath;
+          let mimeType = input.mimeType || 'video/mp4';
+
+          if (stat.size > 1.5 * 1024 * 1024) {
+            proxyTempPath = path.join(
+              os.tmpdir(),
+              `goalcast-gemini-proxy-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.mp4`
+            );
+            try {
+              await createGeminiPreviewProxy(input.videoPath, proxyTempPath);
+              readPath = proxyTempPath;
+              mimeType = 'video/mp4';
+            } catch {
+              proxyTempPath = null;
+            }
+          }
+
+          const finalStat = await fs.stat(readPath).catch(() => null);
+          if (finalStat && finalStat.size > 0 && finalStat.size <= MAX_INLINE_VIDEO_BYTES) {
+            const buffer = await fs.readFile(readPath);
+            parts.push({
+              inlineData: {
+                mimeType,
+                data: buffer.toString('base64'),
+              },
+            });
+          }
+        }
+      }
+
+      parts.push({
+        text: [
+          `Watch this ${duration.toFixed(1)}-second football (soccer) goal clip (filename: "${input.originalFilename}").`,
+          `Return ONLY valid JSON with:`,
+          `1. "buildupLine": ONE punchy, energetic live TV commentator buildup phrase (strictly 7 to 11 words, takes ~3 seconds to speak) describing the ACTUAL situation on screen in the first 3 seconds (e.g., player dribbling toward the box, counter-attack run, lining up a free kick, cutting inside from the wing). STOP right before the goal is scored — do NOT say "GOAL!" because we pause briefly and layer the crowd roar + goal shout at the end!`,
+          `2. "riseStartSec": timestamp in seconds (0.0 to ${duration.toFixed(1)}) when the attack nears goal and crowd tension begins rising (~3.3s–3.8s).`,
+          `3. "eruptSec": exact timestamp in seconds just a split-second before the ball hits the net (~4.7s–5.2s).`,
+          `4. "shortsTitle": punchy viral YouTube Shorts title describing the goal (must include #Shorts, under 90 chars).`,
+          `5. "shortsDescription": 1-2 engaging sentences about the goal + stadium atmosphere.`,
+          `6. "tags": 4 relevant football tags without #.`,
+          `7. "elevenLabsPrompt": concise (<400 chars) 3-phase stadium crowd prompt synced to riseStartSec and eruptSec.`,
+        ].join('\n'),
+      });
+
+      const requestConfig = {
+        systemInstruction:
+          'You are an electrifying live football commentator and YouTube Shorts producer. Keep buildupLine punchy, vivid, and strictly 7-11 words ending right before the goal impact. Return valid JSON only.',
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            buildupLine: { type: Type.STRING },
+            riseStartSec: { type: Type.NUMBER },
+            eruptSec: { type: Type.NUMBER },
+            shortsTitle: { type: Type.STRING },
+            shortsDescription: { type: Type.STRING },
+            tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+            elevenLabsPrompt: { type: Type.STRING },
+          },
+          required: [
+            'buildupLine',
+            'riseStartSec',
+            'eruptSec',
+            'shortsTitle',
+            'shortsDescription',
+            'tags',
+            'elevenLabsPrompt',
+          ],
+        },
+      };
+
+      let response: Awaited<ReturnType<typeof ai.models.generateContent>> | null = null;
+      for (const model of GEMINI_MODELS) {
+        try {
+          console.log(`[GoalCast Gemini] Buildup + semantic timing + title via "${model}"...`);
+          response = await ai.models.generateContent({
+            model,
+            contents: { parts },
+            config: requestConfig,
+          });
+          break;
+        } catch (err) {
+          console.warn(
+            `[GoalCast Gemini] "${model}" failed:`,
+            err instanceof Error ? err.message.slice(0, 140) : String(err)
+          );
+        }
+      }
+
+      const rawText = (response?.text ?? '').trim();
+      if (!rawText) throw new Error('Empty Gemini semantic response');
+
+      const parsed = JSON.parse(rawText) as Partial<VideoSemanticTiming>;
+      const eruptSec = Number(
+        Math.min(
+          duration - 0.25,
+          Math.max(1.0, Number.isFinite(parsed.eruptSec) ? Number(parsed.eruptSec) : defaultErupt)
+        ).toFixed(2)
+      );
+      const riseStartSec = Number(
+        Math.min(
+          eruptSec - 0.3,
+          Math.max(0.3, Number.isFinite(parsed.riseStartSec) ? Number(parsed.riseStartSec) : defaultRise)
+        ).toFixed(2)
+      );
+      const tagSet = new Map<string, string>();
+      for (const rawTag of ['Shorts', 'Football', 'Soccer', 'Goal', ...(parsed.tags ?? [])]) {
+        const cleanTag = String(rawTag).replace(/^#/, '').trim();
+        if (!cleanTag) continue;
+        const lower = cleanTag.toLowerCase();
+        if (!tagSet.has(lower)) tagSet.set(lower, cleanTag);
+      }
+      const tags = Array.from(tagSet.values()).slice(0, 10);
+
+      const rawLine = (parsed.buildupLine || defaultBuildupLine).replace(/\s+/g, ' ').trim();
+      const words = rawLine.split(' ').filter(Boolean);
+      const buildupLine = words.length <= 12 ? rawLine : `${words.slice(0, 11).join(' ')}...`;
+
+      return {
+        riseStartSec,
+        eruptSec,
+        buildupLine,
+        shortsTitle: normalizeShortsTitle(parsed.shortsTitle || fallbackMeta.shortsTitle),
+        shortsDescription: normalizeShortsDescription(
+          parsed.shortsDescription || fallbackMeta.shortsDescription,
+          tags
+        ),
+        tags,
+        elevenLabsPrompt:
+          parsed.elevenLabsPrompt?.trim().slice(0, 440) ||
+          buildStructuredCrowdPrompt(riseStartSec, eruptSec, duration),
+      };
+    } catch (err) {
+      console.warn(
+        '[GoalCast Gemini] Falling back to default buildup, timing & title:',
+        err instanceof Error ? err.message.slice(0, 140) : String(err)
+      );
+      return {
+        riseStartSec: defaultRise,
+        eruptSec: defaultErupt,
+        buildupLine: defaultBuildupLine,
+        ...fallbackMeta,
+        elevenLabsPrompt: buildStructuredCrowdPrompt(defaultRise, defaultErupt, duration),
+      };
+    } finally {
+      if (proxyTempPath) {
+        await fs.unlink(proxyTempPath).catch(() => {});
+      }
+    }
   }
 }

@@ -1,10 +1,12 @@
 import type {
   CameraKeyframe,
   CommentaryCue,
+  CrowdAudioMode,
   GoalAnalysisResult,
   PipelineStage,
   QueueClip,
   StoredYouTubeTokens,
+  VideoSemanticTiming,
 } from '../domain/types.js';
 
 export interface CreateClipInput {
@@ -39,6 +41,18 @@ export interface IQueueRepository {
       commentaryCues: CommentaryCue[];
     }
   ): Promise<QueueClip | null>;
+  markReadyForReview(
+    id: string,
+    payload: {
+      renderedVideoUrl: string;
+      shortsTitle: string;
+      shortsDescription: string;
+      voiceProviderUsed: string;
+      commentaryScript: string;
+    }
+  ): Promise<QueueClip | null>;
+  claimClipForUpload(id: string): Promise<QueueClip | null>;
+  requeueClip(id: string): Promise<QueueClip | null>;
   markUploaded(
     id: string,
     payload: {
@@ -69,6 +83,35 @@ export interface IVideoStorageProvider {
   downloadToFile(blobUrlOrPath: string, destinationPath: string): Promise<boolean>;
   deleteObject(blobUrlOrPath: string): Promise<void>;
   objectExists(blobUrlOrPath: string): Promise<boolean>;
+  resolveLocalFilePath?(blobUrlOrPath: string): string | null;
+}
+
+export interface CrowdAudioMixResult {
+  audioPath: string;
+  mode: CrowdAudioMode;
+  normalTrackName: string;
+  burstTrackName: string;
+  label: string;
+}
+
+export interface ComposeCrowdOptionInput {
+  mode: CrowdAudioMode;
+  durationSec: number;
+  outputAudioPath: string;
+  riseStartSec?: number;
+  eruptSec?: number;
+  delayOffsetSec?: number;
+  buildupLine?: string;
+  elevenLabsPrompt?: string;
+}
+
+export interface ICrowdAudioProvider {
+  composeCrowdTrack(
+    durationSec: number,
+    outputAudioPath: string,
+    burstStartSec?: number
+  ): Promise<CrowdAudioMixResult>;
+  composeOption(input: ComposeCrowdOptionInput): Promise<CrowdAudioMixResult>;
 }
 
 export interface IVideoFormatter {
@@ -86,6 +129,12 @@ export interface IVideoAnalyzer {
     originalFilename: string;
     durationSec: number;
   }): Promise<GoalAnalysisResult>;
+  analyzeSemanticTimingAndTitle(input: {
+    videoPath: string | null;
+    mimeType: string;
+    originalFilename: string;
+    durationSec: number;
+  }): Promise<VideoSemanticTiming>;
 }
 
 export interface VoiceSynthesisResult {
@@ -101,6 +150,17 @@ export interface IAudioMixer {
   mixVoiceoverWithDucking(
     formattedVideoPath: string,
     voiceoverAudioPath: string,
+    finalOutputPath: string
+  ): Promise<void>;
+  replaceAudioTrack(
+    formattedVideoPath: string,
+    audioPath: string,
+    finalOutputPath: string
+  ): Promise<void>;
+  mixOriginalAndCrowdTrack(
+    formattedVideoPath: string,
+    rawSourcePath: string,
+    crowdAudioPath: string,
     finalOutputPath: string
   ): Promise<void>;
 }

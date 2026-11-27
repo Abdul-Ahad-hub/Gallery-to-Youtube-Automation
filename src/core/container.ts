@@ -6,13 +6,13 @@ import type {
 } from './interfaces/providers.js';
 import { GoalCastPipelineOrchestrator } from './pipeline/orchestrator.js';
 import { GeminiGoalAnalyzer } from './providers/ai/gemini-analyzer.js';
+import { LocalCrowdAudioProvider } from './providers/audio/crowd-audio.js';
 import { LocalPreviewRepository } from './providers/db/local-preview-repository.js';
 import { NeonChannelRepository, NeonQueueRepository } from './providers/db/neon-repository.js';
 import { YouTubeShortsPublisher } from './providers/publisher/youtube-publisher.js';
 import { LocalDiskStorageProvider } from './providers/storage/local-disk-storage.js';
 import { VercelBlobStorageProvider } from './providers/storage/vercel-blob-storage.js';
 import { FfmpegAudioMixer, FfmpegShortsFormatter } from './providers/video/ffmpeg-media.js';
-import { HybridCommentaryVoiceSynthesizer } from './providers/voice/commentary-voice.js';
 
 export interface AppContainer {
   queueRepo: IQueueRepository;
@@ -50,10 +50,8 @@ export function getAppContainer(): AppContainer {
   const storage = createStorageProvider();
   const formatter = new FfmpegShortsFormatter();
   const analyzer = new GeminiGoalAnalyzer(env.GEMINI_API_KEY);
-  const voiceSynthesizer = new HybridCommentaryVoiceSynthesizer({
-    elevenLabsKey: env.ELEVENLABS_API_KEY,
-    elevenLabsVoiceId: env.ELEVENLABS_VOICE_ID,
-    edgeVoiceName: env.EDGE_TTS_VOICE,
+  const crowdAudio = new LocalCrowdAudioProvider({
+    elevenLabsApiKey: env.ELEVENLABS_API_KEY,
   });
   const audioMixer = new FfmpegAudioMixer();
   const publisher = new YouTubeShortsPublisher();
@@ -64,7 +62,7 @@ export function getAppContainer(): AppContainer {
     storage,
     formatter,
     analyzer,
-    voiceSynthesizer,
+    crowdAudio,
     audioMixer,
     publisher,
   });

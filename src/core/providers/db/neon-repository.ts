@@ -22,6 +22,7 @@ interface VideoQueueRow {
   thumbnail_url: string;
   status: QueueClip['status'];
   pipeline_stage: PipelineStage;
+  rendered_video_url: string | null;
   voice_provider_used: string | null;
   commentary_script: string | null;
   commentary_cues: CommentaryCue[] | string;
@@ -76,6 +77,7 @@ function mapRowToClip(row: VideoQueueRow): QueueClip {
     thumbnailUrl: row.thumbnail_url,
     status: row.status,
     pipelineStage: row.pipeline_stage,
+    renderedVideoUrl: row.rendered_video_url ?? null,
     voiceProviderUsed: row.voice_provider_used,
     commentaryScript: row.commentary_script,
     commentaryCues: cues,
@@ -105,9 +107,10 @@ export class NeonQueueRepository implements IQueueRepository {
       ORDER BY
         CASE status
           WHEN 'processing' THEN 0
-          WHEN 'pending' THEN 1
-          WHEN 'failed' THEN 2
-          ELSE 3
+          WHEN 'ready_for_review' THEN 1
+          WHEN 'pending' THEN 2
+          WHEN 'failed' THEN 3
+          ELSE 4
         END,
         created_at ASC
     `) as unknown as VideoQueueRow[];
@@ -204,6 +207,60 @@ export class NeonQueueRepository implements IQueueRepository {
     return rows[0] ? mapRowToClip(rows[0]) : null;
   }
 
+  async markReadyForReview(
+    id: string,
+    payload: {
+      renderedVideoUrl: string;
+      shortsTitle: string;
+      shortsDescription: string;
+      voiceProviderUsed: string;
+      commentaryScript: string;
+    }
+  ): Promise<QueueClip | null> {
+    const rows = (await this.sql`
+      UPDATE video_queue
+      SET status = 'ready_for_review',
+          pipeline_stage = 'awaiting_approval',
+          rendered_video_url = ${payload.renderedVideoUrl},
+          shorts_title = ${payload.shortsTitle},
+          shorts_description = ${payload.shortsDescription},
+          voice_provider_used = ${payload.voiceProviderUsed},
+          commentary_script = ${payload.commentaryScript},
+          error_message = NULL,
+          updated_at = NOW()
+      WHERE id = ${id}
+      RETURNING *
+    `) as unknown as VideoQueueRow[];
+    return rows[0] ? mapRowToClip(rows[0]) : null;
+  }
+
+  async claimClipForUpload(id: string): Promise<QueueClip | null> {
+    const rows = (await this.sql`
+      UPDATE video_queue
+      SET status = 'processing',
+          pipeline_stage = 'uploading_youtube',
+          error_message = NULL,
+          updated_at = NOW()
+      WHERE id = ${id} AND status = 'ready_for_review'
+      RETURNING *
+    `) as unknown as VideoQueueRow[];
+    return rows[0] ? mapRowToClip(rows[0]) : null;
+  }
+
+  async requeueClip(id: string): Promise<QueueClip | null> {
+    const rows = (await this.sql`
+      UPDATE video_queue
+      SET status = 'pending',
+          pipeline_stage = 'queued',
+          rendered_video_url = NULL,
+          error_message = NULL,
+          updated_at = NOW()
+      WHERE id = ${id} AND status IN ('failed', 'ready_for_review')
+      RETURNING *
+    `) as unknown as VideoQueueRow[];
+    return rows[0] ? mapRowToClip(rows[0]) : null;
+  }
+
   async markUploaded(
     id: string,
     payload: {
@@ -222,6 +279,7 @@ export class NeonQueueRepository implements IQueueRepository {
       UPDATE video_queue
       SET status = 'uploaded',
           pipeline_stage = 'completed',
+          rendered_video_url = NULL,
           youtube_video_id = ${payload.youtubeVideoId},
           youtube_url = ${payload.youtubeUrl},
           shorts_title = ${payload.shortsTitle},

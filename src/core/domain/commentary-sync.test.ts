@@ -1,9 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildBroadcastMixFilterGraph,
   buildCameraPanExpression,
   buildCommentaryDuckingFilterGraph,
+  buildCrowdAudioMixFilterGraph,
+  buildLandscapeRotationFilter,
   buildVerticalShortsFilterGraph,
+  generateFootballShortMetadata,
   isSafeYouTubeUrl,
   normalizeCameraTrack,
   normalizeCommentaryCues,
@@ -122,4 +126,47 @@ test('isSafeYouTubeUrl allows only https YouTube origins and blocks javascript U
   assert.equal(isSafeYouTubeUrl('javascript:alert(1)'), false);
   assert.equal(isSafeYouTubeUrl('http://evil.example.com/shorts/abc'), false);
   assert.equal(isSafeYouTubeUrl(null), false);
+});
+
+test('buildLandscapeRotationFilter rotates landscape videos 90 deg clockwise and preserves vertical clips', () => {
+  const landscape = buildLandscapeRotationFilter(true);
+  assert.ok(landscape.includes('transpose=1'));
+  assert.ok(landscape.includes('setsar=1'));
+
+  const vertical = buildLandscapeRotationFilter(false);
+  assert.ok(!vertical.includes('transpose=1'));
+  assert.ok(vertical.includes('setsar=1'));
+});
+
+test('buildCrowdAudioMixFilterGraph stitches normal crowd 0.0-5.15s with delayed burst roar', () => {
+  const graph = buildCrowdAudioMixFilterGraph(5.15, 6.0);
+  assert.ok(graph.includes('atrim=0:5.4'));
+  assert.ok(graph.includes('afade=t=out:st=5:d=0.35:curve=qsin'));
+  assert.ok(graph.includes('adelay=5050|5050'));
+  assert.ok(graph.includes('atrim=0:6'));
+  assert.ok(graph.includes('loudnorm=I=-14'));
+});
+
+test('buildBroadcastMixFilterGraph layers intro commentary, pause swell, burst, and goal shout', () => {
+  const graph = buildBroadcastMixFilterGraph({
+    hasIntroVoice: true,
+    hasGoalShout: true,
+    totalDurationSec: 6.0,
+    riseStartSec: 3.5,
+    burstStartSec: 5.15,
+    shoutStartSec: 5.03,
+    shoutTempo: 1.05,
+  });
+  assert.ok(graph.includes('[intro]'));
+  assert.ok(graph.includes('[shout]'));
+  assert.ok(graph.includes('adelay=5030|5030'));
+  assert.ok(graph.includes('amix=inputs=4'));
+});
+
+test('generateFootballShortMetadata produces #Shorts title, description, and stadium tags without API calls', () => {
+  const meta = generateFootballShortMetadata('goal_clip_01.mp4');
+  assert.ok(meta.shortsTitle.includes('#Shorts'));
+  assert.ok(meta.shortsTitle.length <= 100);
+  assert.ok(meta.shortsDescription.includes('#Shorts'));
+  assert.ok(meta.tags.includes('Football'));
 });

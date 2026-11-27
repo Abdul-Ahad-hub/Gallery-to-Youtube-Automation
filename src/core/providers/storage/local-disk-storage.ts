@@ -71,4 +71,11 @@ export class LocalDiskStorageProvider implements IVideoStorageProvider {
       return false;
     }
   }
+
+  resolveLocalFilePath(blobUrlOrPath: string): string | null {
+    if (!blobUrlOrPath.startsWith('local://')) {
+      return null;
+    }
+    return this.resolveSafePath(blobUrlOrPath);
+  }
 }

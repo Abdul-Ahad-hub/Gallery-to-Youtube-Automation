@@ -18,6 +18,11 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  if (outcome.clip?.status === 'ready_for_review') {
+    console.log(`[GoalCast Worker] Ready for preview: ${outcome.message}`);
+    process.exit(0);
+  }
+
   if (outcome.clip?.status === 'uploaded') {
     console.log(`[GoalCast Worker] Success: ${outcome.message}`);
     console.log(`[GoalCast Worker] YouTube Short URL: ${outcome.clip.youtubeUrl}`);

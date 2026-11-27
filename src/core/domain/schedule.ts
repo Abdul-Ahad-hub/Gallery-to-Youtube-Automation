@@ -80,7 +80,8 @@ export function computePendingQueuePositions(clips: QueueClip[]): Record<string,
 export function canTransitionClipStatus(from: ClipStatus, to: ClipStatus): boolean {
   const allowed: Record<ClipStatus, ClipStatus[]> = {
     pending: ['processing'],
-    processing: ['uploaded', 'failed'],
+    processing: ['ready_for_review', 'uploaded', 'failed'],
+    ready_for_review: ['processing', 'pending', 'uploaded', 'failed'],
     failed: ['pending'],
     uploaded: [],
   };

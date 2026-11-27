@@ -19,6 +19,12 @@ export const envSchema = z.object({
   ELEVENLABS_API_KEY: optionalNonEmpty,
   ELEVENLABS_VOICE_ID: optionalNonEmpty.default('pNInz6obpgDQGcFmaJgB'),
   EDGE_TTS_VOICE: optionalNonEmpty.default('en-GB-RyanNeural'),
+  REQUIRE_UPLOAD_APPROVAL: optionalNonEmpty.default('false'),
+  AUTH_SESSION_SECRET: optionalNonEmpty,
+  AUTH_PROD_USER: optionalNonEmpty,
+  AUTH_PROD_PASS: optionalNonEmpty,
+  AUTH_ADMIN_USER: optionalNonEmpty,
+  AUTH_ADMIN_PASS: optionalNonEmpty,
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
@@ -29,4 +35,8 @@ export function getEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
 
 export function isVercelBlobConfigured(source: NodeJS.ProcessEnv = process.env): boolean {
   return Boolean(getEnv(source).BLOB_READ_WRITE_TOKEN);
+}
+
+export function isUploadApprovalRequired(source: NodeJS.ProcessEnv = process.env): boolean {
+  return getEnv(source).REQUIRE_UPLOAD_APPROVAL === 'true';
 }

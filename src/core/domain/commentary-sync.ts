@@ -53,12 +53,17 @@ export function normalizeShortsDescription(rawDescription: string, tags: string[
     cleaned.length > 0
       ? cleaned
       : 'Pure matchday magic! Watch this clinical finish with live AI broadcast commentary.';
-  const normalizedTags = Array.from(
-    new Set(
-      ['#Shorts', '#Football', '#Soccer', '#Goal', ...tags.map((t) => (t.startsWith('#') ? t : `#${t.replace(/\s+/g, '')}`))]
-        .filter((t) => t.length > 1)
-    )
-  );
+  const seen = new Set<string>();
+  const normalizedTags: string[] = [];
+  for (const rawTag of ['#Shorts', '#Football', '#Soccer', '#Goal', ...tags]) {
+    const cleanTag = rawTag.startsWith('#') ? rawTag : `#${rawTag.replace(/\s+/g, '')}`;
+    if (cleanTag.length <= 1) continue;
+    const key = cleanTag.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      normalizedTags.push(cleanTag);
+    }
+  }
 
   const missingTags = normalizedTags.filter(
     (tag) => !new RegExp(`${tag.replace('#', '#')}\\b`, 'i').test(base)
@@ -298,6 +303,161 @@ export function buildCommentaryDuckingFilterGraph(crowdGain: number = 0.25): str
     `[crowd][vo_sc]sidechaincompress=threshold=0.06:ratio=2.5:attack=30:release=250[ducked]`,
     `[ducked][vo_mix]amix=inputs=2:duration=first:dropout_transition=2,dynaudnorm[aout]`,
   ].join(';');
+}
+
+/**
+ * Full-res YouTube Shorts orientation helper.
+ * Rotates landscape clips 90° clockwise (`transpose=1`) so the full frame fills
+ * a vertical Short at native resolution without cropping or blurred bars.
+ * Clips that are already vertical (`height >= width`) are kept as-is.
+ */
+export function buildLandscapeRotationFilter(isLandscape: boolean): string {
+  return isLandscape
+    ? 'transpose=1,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1'
+    : 'scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1';
+}
+
+/**
+ * Builds an FFmpeg filter_complex graph that stitches a normal crowd ambience track
+ * (0.0s to burstStartSec) with an explosive goal roar burst (burstStartSec to end),
+ * smoothly crossfaded and loudness-normalized for YouTube Shorts.
+ */
+export function buildCrowdAudioMixFilterGraph(
+  burstStartSec: number = 5.25,
+  totalDurationSec: number = 6.0,
+  riseStartSec: number = 3.6
+): string {
+  const safeTotal = Math.max(1.5, Number(totalDurationSec.toFixed(2)));
+  const safeBurst = Math.max(0.6, Math.min(safeTotal - 0.35, Number(burstStartSec.toFixed(2))));
+  const safeRise = Math.max(0, Math.min(safeBurst - 0.2, Number(riseStartSec.toFixed(2))));
+  const riseDur = Math.max(0.15, Number((safeBurst - safeRise).toFixed(2)));
+  const fadeOutStart = Math.max(0, Number((safeBurst - 0.15).toFixed(2)));
+  const normalTrim = Number(Math.min(safeTotal, safeBurst + 0.25).toFixed(2));
+  const delayMs = Math.max(0, Math.round((safeBurst - 0.1) * 1000));
+
+  return [
+    `[0:a]aresample=44100,aformat=channel_layouts=stereo,aloop=loop=-1:size=441000,atrim=0:${normalTrim},asetpts=PTS-STARTPTS,volume='if(lt(t,${safeRise}),0.72,if(lt(t,${safeBurst}),0.72+0.48*(t-${safeRise})/${riseDur},1.2))':eval=frame,afade=t=out:st=${fadeOutStart}:d=0.35:curve=qsin[normal]`,
+    `[1:a]aresample=44100,aformat=channel_layouts=stereo,afade=t=in:st=0:d=0.20:curve=qsin,aecho=0.8:0.82:35|70:0.22|0.15,adelay=${delayMs}|${delayMs}[burst]`,
+    `[normal][burst]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,apad,atrim=0:${safeTotal},asetpts=PTS-STARTPTS,loudnorm=I=-14:TP=-1.5:LRA=9[aout]`,
+  ].join(';');
+}
+
+/**
+ * Builds the 3-layer stadium broadcast FFmpeg filter_complex graph:
+ *   [0:a] normal crowd bed (0 -> riseStartSec -> swells smoothly to burstStartSec)
+ *   [1:a] crowd burst roar (hits at burstStartSec with stadium echo)
+ *   optional intro commentary (0.15s -> 3.55s, followed by a dramatic pause)
+ *   optional hardcoded goal shout (synced right on goal eruption)
+ */
+export function buildBroadcastMixFilterGraph(options: {
+  hasIntroVoice: boolean;
+  hasGoalShout: boolean;
+  totalDurationSec: number;
+  riseStartSec: number;
+  burstStartSec: number;
+  shoutStartSec: number;
+  shoutTempo?: number;
+}): string {
+  const safeTotal = Math.max(2.0, Number(options.totalDurationSec.toFixed(2)));
+  const safeBurst = Math.max(1.2, Math.min(safeTotal - 0.3, Number(options.burstStartSec.toFixed(2))));
+  const safeRise = Math.max(0.4, Math.min(safeBurst - 0.2, Number(options.riseStartSec.toFixed(2))));
+  const riseDur = Math.max(0.15, Number((safeBurst - safeRise).toFixed(2)));
+  const fadeOutStart = Math.max(0, Number((safeBurst - 0.15).toFixed(2)));
+  const normalTrim = Number(Math.min(safeTotal, safeBurst + 0.25).toFixed(2));
+  const burstDelayMs = Math.max(0, Math.round((safeBurst - 0.1) * 1000));
+
+  const baseCrowdVolume = options.hasIntroVoice
+    ? `if(lt(t,${safeRise}),0.55,if(lt(t,${safeBurst}),0.55+0.50*(t-${safeRise})/${riseDur},1.05))`
+    : `if(lt(t,${safeRise}),0.72,if(lt(t,${safeBurst}),0.72+0.48*(t-${safeRise})/${riseDur},1.2))`;
+
+  const filters: string[] = [
+    `[0:a]aresample=44100,aformat=channel_layouts=stereo,aloop=loop=-1:size=441000,atrim=0:${normalTrim},asetpts=PTS-STARTPTS,volume='${baseCrowdVolume}':eval=frame,afade=t=out:st=${fadeOutStart}:d=0.30:curve=qsin[normal]`,
+    `[1:a]aresample=44100,aformat=channel_layouts=stereo,afade=t=in:st=0:d=0.15:curve=qsin,aecho=0.8:0.82:35|70:0.20|0.14,adelay=${burstDelayMs}|${burstDelayMs}[burst]`,
+  ];
+
+  const mixInputs = ['[normal]', '[burst]'];
+  let nextInputIdx = 2;
+
+  if (options.hasIntroVoice) {
+    const idx = nextInputIdx++;
+    filters.push(
+      `[${idx}:a]aresample=44100,aformat=channel_layouts=stereo,silenceremove=start_periods=1:start_threshold=-40dB,atrim=0:3.55,asetpts=PTS-STARTPTS,afade=t=out:st=3.35:d=0.20,loudnorm=I=-14:TP=-1.5:LRA=9,volume=1.18,adelay=150|150[intro]`
+    );
+    mixInputs.push('[intro]');
+  }
+
+  if (options.hasGoalShout) {
+    const idx = nextInputIdx++;
+    const tempo =
+      options.shoutTempo && options.shoutTempo > 1.02
+        ? `atempo=${Math.min(1.5, Number(options.shoutTempo.toFixed(2)))},`
+        : '';
+    const shoutDelayMs = Math.max(0, Math.round(options.shoutStartSec * 1000));
+    filters.push(
+      `[${idx}:a]aresample=44100,aformat=channel_layouts=stereo,silenceremove=start_periods=1:start_threshold=-40dB,${tempo}loudnorm=I=-13:TP=-1.5:LRA=9,aecho=0.8:0.8:30|60:0.18|0.12,volume=1.22,adelay=${shoutDelayMs}|${shoutDelayMs}[shout]`
+    );
+    mixInputs.push('[shout]');
+  }
+
+  filters.push(
+    `${mixInputs.join('')}amix=inputs=${mixInputs.length}:duration=longest:dropout_transition=0:normalize=0,apad,atrim=0:${safeTotal},asetpts=PTS-STARTPTS,loudnorm=I=-14:TP=-1.5:LRA=9[aout]`
+  );
+
+  return filters.join(';');
+}
+
+/**
+ * Generates a structured 3-phase ElevenLabs stadium SFX prompt (<= 440 chars)
+ * synced to Gemini's semantic buildup-rise and goal-eruption timestamps.
+ */
+export function buildStructuredCrowdPrompt(
+  riseStartSec: number,
+  eruptSec: number,
+  totalDurationSec: number
+): string {
+  const safeTotal = Math.max(2.0, Number(totalDurationSec.toFixed(1)));
+  const safeErupt = Math.max(1.0, Math.min(safeTotal - 0.4, Number(eruptSec.toFixed(2))));
+  const safeRise = Math.max(0.4, Math.min(safeErupt - 0.4, Number(riseStartSec.toFixed(2))));
+
+  const raw =
+    `0.0s-${safeRise.toFixed(1)}s: Packed football stadium ambience, steady matchday chatter & chanting. ` +
+    `${safeRise.toFixed(1)}s-${safeErupt.toFixed(1)}s: Crowd swells in tense anticipation, collective "ooooh!" on the shot. ` +
+    `${safeErupt.toFixed(1)}s-${safeTotal.toFixed(1)}s: Massive stadium eruption! Fans shouting "YEEES!", screaming, whistling in euphoria. ` +
+    `Live broadcast mic, wide stereo, zero commentary, no music.`;
+
+  return raw.slice(0, 440);
+}
+
+const STADIUM_SHORT_TITLES = [
+  'PURE STADIUM ROAR! Unstoppable Goal! #Shorts',
+  'LISTEN TO THAT CROWD! Clinical Finish! #Shorts',
+  'ABSOLUTE LIMBS! What a Strike! #Shorts',
+  'THE STADIUM ERUPTS! Top-Class Goal! #Shorts',
+  'UNREAL GOAL! Instant Crowd Explosion! #Shorts',
+] as const;
+
+/**
+ * Generates zero-API YouTube Shorts metadata tailored for stadium-crowd football clips.
+ */
+export function generateFootballShortMetadata(originalFilename: string): {
+  shortsTitle: string;
+  shortsDescription: string;
+  tags: string[];
+} {
+  let hash = 0;
+  for (let i = 0; i < originalFilename.length; i++) {
+    hash = (hash * 31 + originalFilename.charCodeAt(i)) >>> 0;
+  }
+  const title = STADIUM_SHORT_TITLES[hash % STADIUM_SHORT_TITLES.length];
+  const tags = ['Shorts', 'Football', 'Soccer', 'Goal', 'StadiumAtmosphere'];
+  return {
+    shortsTitle: normalizeShortsTitle(title),
+    shortsDescription: normalizeShortsDescription(
+      'Pure matchday atmosphere from buildup to the stadium eruption. Turn up the sound for the goal roar!',
+      tags
+    ),
+    tags,
+  };
 }
 
 /**

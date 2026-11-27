@@ -10,8 +10,9 @@ CREATE TABLE IF NOT EXISTS video_queue (
   duration_sec REAL NOT NULL DEFAULT 6.0,
   mime_type TEXT NOT NULL DEFAULT 'video/mp4',
   thumbnail_url TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'uploaded', 'failed')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'ready_for_review', 'uploaded', 'failed')),
   pipeline_stage TEXT NOT NULL DEFAULT 'queued',
+  rendered_video_url TEXT,
   voice_provider_used TEXT,
   commentary_script TEXT,
   commentary_cues JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -41,3 +42,9 @@ CREATE TABLE IF NOT EXISTS youtube_connections (
   connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Safe idempotent migrations for existing databases
+ALTER TABLE video_queue ADD COLUMN IF NOT EXISTS rendered_video_url TEXT;
+ALTER TABLE video_queue DROP CONSTRAINT IF EXISTS video_queue_status_check;
+ALTER TABLE video_queue ADD CONSTRAINT video_queue_status_check
+  CHECK (status IN ('pending', 'processing', 'ready_for_review', 'uploaded', 'failed'));

@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   buildCommentaryDuckingFilterGraph,
-  buildVerticalShortsFilterGraph,
+  buildLandscapeRotationFilter,
 } from '../../domain/commentary-sync.js';
 import type { CameraKeyframe } from '../../domain/types.js';
 import type { IAudioMixer, IVideoFormatter } from '../../interfaces/providers.js';
@@ -16,6 +16,40 @@ export async function isFfmpegAvailable(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Creates a lightweight ~150 KB muted proxy MP4 (360px wide, 2 fps) so Gemini
+ * can inspect visual action & timing quickly without hitting inline payload timeouts.
+ */
+export async function createGeminiPreviewProxy(
+  inputPath: string,
+  outputPath: string
+): Promise<string> {
+  await execFileAsync(
+    'ffmpeg',
+    [
+      '-y',
+      '-i',
+      inputPath,
+      '-vf',
+      'scale=360:-2,fps=2',
+      '-an',
+      '-c:v',
+      'libx264',
+      '-preset',
+      'ultrafast',
+      '-crf',
+      '32',
+      '-pix_fmt',
+      'yuv420p',
+      '-movflags',
+      '+faststart',
+      outputPath,
+    ],
+    { timeout: 30_000 }
+  );
+  return outputPath;
 }
 
 export async function probeHasAudioStream(videoPath: string): Promise<boolean> {
@@ -63,23 +97,100 @@ export async function probeVideoDurationSec(videoPath: string): Promise<number |
   }
 }
 
+export async function probeVideoDimensions(
+  videoPath: string
+): Promise<{ width: number; height: number } | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      'ffprobe',
+      [
+        '-v',
+        'error',
+        '-select_streams',
+        'v:0',
+        '-show_entries',
+        'stream=width,height:stream_tags=rotate:side_data=rotation',
+        '-of',
+        'json',
+        videoPath,
+      ],
+      { timeout: 10_000 }
+    );
+    const parsed = JSON.parse(stdout) as {
+      streams?: Array<{
+        width?: number;
+        height?: number;
+        tags?: { rotate?: string | number };
+        side_data_list?: Array<{ rotation?: number | string }>;
+      }>;
+    };
+    const stream = parsed.streams?.[0];
+    if (!stream || !stream.width || !stream.height) return null;
+
+    const tagRotate = Number(stream.tags?.rotate ?? 0);
+    const sideRotate = Number(stream.side_data_list?.find((d) => d.rotation !== undefined)?.rotation ?? 0);
+    const rotation = Number.isFinite(tagRotate) && tagRotate !== 0 ? tagRotate : Number.isFinite(sideRotate) ? sideRotate : 0;
+    const isQuarterTurn = Math.abs(Math.round(rotation)) % 180 === 90;
+
+    return isQuarterTurn
+      ? { width: stream.height, height: stream.width }
+      : { width: stream.width, height: stream.height };
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Full-screen 9:16 YouTube Shorts pan-and-scan video formatter using FFmpeg.
- * Dynamically crops a full-height 9:16 portrait window that tracks the ball and
- * goal via piecewise-linear `cameraTrack` interpolation, with zero blurred bars.
+ * Lossless / full-resolution YouTube Shorts orientation formatter using FFmpeg.
+ * Preserves 100% original pixel resolution and quality via `-c:v copy` with
+ * display rotation metadata (`-display_rotation:v:0 270`, 90° clockwise) when
+ * compatible, falling back to visually lossless `transpose=1` (`-crf 14`) only
+ * if the input container/codec cannot be stream-copied into MP4.
  */
 export class FfmpegShortsFormatter implements IVideoFormatter {
   async formatToVerticalShorts(
     inputPath: string,
     outputPath: string,
-    cameraTrack?: CameraKeyframe[]
+    _cameraTrack?: CameraKeyframe[]
   ): Promise<void> {
-    const filterChain = buildVerticalShortsFilterGraph(cameraTrack, 1080, 1920);
+    const dims = await probeVideoDimensions(inputPath);
+    const isLandscape = dims ? dims.width > dims.height : true;
+
+    try {
+      const copyArgs = isLandscape
+        ? [
+            '-y',
+            '-display_rotation:v:0',
+            '270',
+            '-i',
+            inputPath,
+            '-map',
+            '0:v:0',
+            '-an',
+            '-c:v',
+            'copy',
+            '-movflags',
+            '+faststart',
+            outputPath,
+          ]
+        : ['-y', '-i', inputPath, '-map', '0:v:0', '-an', '-c:v', 'copy', '-movflags', '+faststart', outputPath];
+
+      await execFileAsync('ffmpeg', copyArgs, { timeout: 60_000 });
+      const outDims = await probeVideoDimensions(outputPath);
+      if (outDims && outDims.height > outDims.width) {
+        console.log(
+          `[GoalCast FFmpeg] Lossless stream copy preserved exact resolution: ${outDims.width}x${outDims.height}`
+        );
+        return;
+      }
+    } catch {
+      // Non-MP4 input codec (e.g., WebM/VP9) — fall through to visually lossless transcode
+    }
+
+    const filterChain = buildLandscapeRotationFilter(isLandscape);
     console.log(
-      '[GoalCast FFmpeg] cameraTrack keyframes:',
-      cameraTrack && cameraTrack.length > 0 ? JSON.stringify(cameraTrack) : '[] (centered fallback)'
+      `[GoalCast FFmpeg] Source dimensions: ${dims ? `${dims.width}x${dims.height}` : 'unknown'} -> lossless-grade full-res (${filterChain})`
     );
-    console.log('[GoalCast FFmpeg] Dynamic 9:16 crop filter:', filterChain);
 
     await execFileAsync(
       'ffmpeg',
@@ -91,20 +202,15 @@ export class FfmpegShortsFormatter implements IVideoFormatter {
         filterChain,
         '-map',
         '0:v:0',
-        '-map',
-        '0:a?',
+        '-an',
         '-c:v',
         'libx264',
         '-preset',
         'veryfast',
         '-crf',
-        '20',
+        '14',
         '-pix_fmt',
         'yuv420p',
-        '-c:a',
-        'aac',
-        '-b:a',
-        '128k',
         '-movflags',
         '+faststart',
         outputPath,
@@ -181,6 +287,81 @@ export class FfmpegAudioMixer implements IAudioMixer {
         voiceoverAudioPath,
         '-filter_complex',
         synthCrowdFilter,
+        '-map',
+        '0:v:0',
+        '-map',
+        '[aout]',
+        '-c:v',
+        'copy',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '192k',
+        '-shortest',
+        '-movflags',
+        '+faststart',
+        finalOutputPath,
+      ],
+      { timeout: 120_000 }
+    );
+  }
+
+  async replaceAudioTrack(
+    formattedVideoPath: string,
+    audioPath: string,
+    finalOutputPath: string
+  ): Promise<void> {
+    await execFileAsync(
+      'ffmpeg',
+      [
+        '-y',
+        '-i',
+        formattedVideoPath,
+        '-i',
+        audioPath,
+        '-map',
+        '0:v:0',
+        '-map',
+        '1:a:0',
+        '-c:v',
+        'copy',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '192k',
+        '-shortest',
+        '-movflags',
+        '+faststart',
+        finalOutputPath,
+      ],
+      { timeout: 120_000 }
+    );
+  }
+
+  async mixOriginalAndCrowdTrack(
+    formattedVideoPath: string,
+    rawSourcePath: string,
+    crowdAudioPath: string,
+    finalOutputPath: string
+  ): Promise<void> {
+    const hasOriginalAudio = await probeHasAudioStream(rawSourcePath);
+    if (!hasOriginalAudio) {
+      await this.replaceAudioTrack(formattedVideoPath, crowdAudioPath, finalOutputPath);
+      return;
+    }
+
+    await execFileAsync(
+      'ffmpeg',
+      [
+        '-y',
+        '-i',
+        formattedVideoPath,
+        '-i',
+        rawSourcePath,
+        '-i',
+        crowdAudioPath,
+        '-filter_complex',
+        '[1:a]volume=0.35[orig];[2:a]volume=0.95[crowd];[orig][crowd]amix=inputs=2:duration=shortest:dropout_transition=0:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=9[aout]',
         '-map',
         '0:v:0',
         '-map',

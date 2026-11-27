@@ -24,13 +24,10 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
-      - name: Install FFmpeg (Non-AI 9:16 formatting & crowd ducking)
+      - name: Install FFmpeg (Lossless Shorts formatting & stadium broadcast mix)
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-
-      - name: Install Edge TTS (Free unlimited fallback voice engine)
-        run: pip install --quiet edge-tts
 
       - name: Install dependencies
         run: npm ci
@@ -42,9 +39,9 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
-          EDGE_TTS_VOICE: ${{ secrets.EDGE_TTS_VOICE }}
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REDIRECT_URI: ${{ secrets.YOUTUBE_REDIRECT_URI }}
           YOUTUBE_PRIVACY_STATUS: ${{ secrets.YOUTUBE_PRIVACY_STATUS }}
+          REQUIRE_UPLOAD_APPROVAL: 'false'
         run: npx tsx scripts/process-next.ts
